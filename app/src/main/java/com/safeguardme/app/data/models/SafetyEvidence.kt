@@ -1,76 +1,189 @@
-// data/models/SafetyEvidence.kt - Data Models for Safety Evidence
+// data/models/SafetyEvidence.kt - ALIGNED VERSION
 package com.safeguardme.app.data.models
 
+import com.google.firebase.firestore.PropertyName
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.io.File
 import java.util.UUID
 
 /**
- * Core safety evidence data model
+ * ✅ ALIGNED: Core safety evidence data model with consistent state management
  */
 data class SafetyEvidence(
     val id: String = UUID.randomUUID().toString(),
     val sessionId: String,
     val type: EvidenceType,
     val timestamp: Long = System.currentTimeMillis(),
+
+    // Location data - PRIMARY SOURCE
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val accuracy: Float? = null,
+
+    // File data
     val filePath: String? = null,
+    val fileName: String? = null,
+    val fileSize: Long? = null,
+
+    // Audio/Voice data
+    val transcription: String? = null,
+    val confidence: Float? = null,
+    val keyword: String? = null,
+    val fullText: String? = null,
+
+    // Distress detection
+    val distressKeywords: List<String>? = null,
+    val distressLevel: DistressLevel? = null,
+
+    // Status tracking - REALISTIC DEFAULTS
+    val isUploaded: Boolean = false,
+    val uploadTimestamp: Long? = null,
+    val notes: String? = null,
+    val uploadStatus: EvidenceUploadStatus = EvidenceUploadStatus.PENDING,
+    val uploadedAt: Long? = null,
+    val priority: EvidencePriority = EvidencePriority.NORMAL,
+    val verified: Boolean = false,
+    val verifiedAt: Long? = null,
+    val verifiedBy: String? = null,
+
+    // Metadata for additional context (NO DUPLICATION)
     val metadata: Map<String, Any> = emptyMap(),
     val localPath: String? = null,
     val firebaseStorageUrl: String? = null,
-    val uploadStatus: String = "pending", // pending, uploading, completed, failed
-    val uploadedAt: Long? = null,
-    val priority: EvidencePriority = EvidencePriority.NORMAL,
-    val verified: Boolean = false
+    val description: String
 ) {
 
     fun toJson(): String {
         return gson.toJson(this)
     }
 
+    fun fromJson(json: String): SafetyEvidence {
+        return gson.fromJson(json, SafetyEvidence::class.java)
+    }
+
+
+
+    /**
+     * ✅ ALIGNED: Validation ensures data integrity
+     */
+    fun validate(): EvidenceValidationResult {
+        val errors = mutableListOf<String>()
+        val warnings = mutableListOf<String>()
+
+        // Required field validation
+        if (sessionId.isBlank()) errors.add("Session ID is required")
+        if (description.isBlank()) warnings.add("Description is empty")
+
+        // Type-specific validation
+        when (type) {
+            EvidenceType.LOCATION -> {
+                if (latitude == null || longitude == null) {
+                    errors.add("Location evidence requires coordinates")
+                }
+            }
+            EvidenceType.PHOTO -> {
+                if (filePath.isNullOrBlank()) {
+                    errors.add("Photo evidence requires file path")
+                }
+            }
+            EvidenceType.VOICE_TRIGGER -> {
+                if (keyword.isNullOrBlank()) {
+                    errors.add("Voice trigger evidence requires keyword")
+                }
+            }
+            EvidenceType.AUDIO -> {
+                if (filePath.isNullOrBlank()) {
+                    errors.add("Audio evidence requires file path")
+                }
+            }
+            else -> { /* Other types may have different requirements */ }
+        }
+
+        // Status consistency validation
+        if (verified && verifiedAt == null) {
+            warnings.add("Evidence marked verified without timestamp")
+        }
+        if (isUploaded && uploadedAt == null) {
+            warnings.add("Evidence marked uploaded without timestamp")
+        }
+        if (uploadStatus == EvidenceUploadStatus.COMPLETED && !isUploaded) {
+            errors.add("Upload status/flag mismatch")
+        }
+
+        return EvidenceValidationResult(
+            isValid = errors.isEmpty(),
+            errors = errors,
+            warnings = warnings
+        )
+    }
+
+    /**
+     * ✅ ALIGNED: Safe state transitions
+     */
+    fun markAsUploaded(uploadUrl: String): SafetyEvidence {
+        return this.copy(
+            isUploaded = true,
+            uploadStatus = EvidenceUploadStatus.COMPLETED,
+            uploadedAt = System.currentTimeMillis(),
+            firebaseStorageUrl = uploadUrl
+        )
+    }
+
+    fun markAsVerified(verifierName: String): SafetyEvidence {
+        return this.copy(
+            verified = true,
+            verifiedAt = System.currentTimeMillis(),
+            verifiedBy = verifierName
+        )
+    }
+
+    fun markUploadFailed(errorMessage: String): SafetyEvidence {
+        return this.copy(
+            uploadStatus = EvidenceUploadStatus.FAILED,
+            metadata = metadata + ("uploadError" to errorMessage)
+        )
+    }
+
+    /**
+     * ✅ ALIGNED: Clean Firestore mapping without duplication
+     */
     fun toFirestoreMap(): Map<String, Any> {
         return mapOf(
             "id" to id,
             "sessionId" to sessionId,
             "type" to type.name,
             "timestamp" to timestamp,
-            "filePath" to (filePath ?: ""),
-            "metadata" to metadata,
-            "localPath" to (localPath ?: ""),
-            "firebaseStorageUrl" to (firebaseStorageUrl ?: ""),
-            "uploadStatus" to uploadStatus,
-            "uploadedAt" to (uploadedAt ?: 0L),
+            "latitude" to latitude,
+            "longitude" to longitude,
+            "accuracy" to accuracy,
+            "filePath" to filePath,
+            "fileName" to fileName,
+            "fileSize" to fileSize,
+            "transcription" to transcription,
+            "confidence" to confidence,
+            "keyword" to keyword,
+            "fullText" to fullText,
+            "distressKeywords" to distressKeywords,
+            "distressLevel" to distressLevel?.name,
+            "isUploaded" to isUploaded,
+            "uploadTimestamp" to uploadTimestamp,
+            "notes" to notes,
+            "uploadStatus" to uploadStatus.name,
+            "uploadedAt" to uploadedAt,
             "priority" to priority.name,
-            "verified" to verified
-        )
-    }
-
-    fun getFormattedTimestamp(): String {
-        return SimpleDateFormat("MMM dd, yyyy HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
-    }
-
-    fun getHumanReadableType(): String {
-        return when (type) {
-            EvidenceType.LOCATION -> "📍 Location"
-            EvidenceType.PHOTO -> "📷 Photo"
-            EvidenceType.AUDIO -> "🎤 Audio Recording"
-            EvidenceType.TRANSCRIPTION -> "📝 Audio Transcription"
-            EvidenceType.SENSOR -> "📊 Sensor Data"
-            EvidenceType.SYSTEM_LOG -> "⚙️ System Log"
-            EvidenceType.USER_INPUT -> "👤 User Input"
-        }
+            "verified" to verified,
+            "verifiedAt" to verifiedAt,
+            "verifiedBy" to verifiedBy,
+            "metadata" to metadata,
+            "localPath" to localPath,
+            "firebaseStorageUrl" to firebaseStorageUrl,
+            "description" to description
+        ).filterValues { it != null } as Map<String, Any>
     }
 
     companion object {
-        private val gson: Gson = GsonBuilder()
-            .setPrettyPrinting()
-            .create()
-
-        fun fromJson(json: String): SafetyEvidence {
-            return gson.fromJson(json, SafetyEvidence::class.java)
-        }
+        private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
 
         fun fromFirestoreMap(map: Map<String, Any>, documentId: String): SafetyEvidence {
             return SafetyEvidence(
@@ -78,148 +191,70 @@ data class SafetyEvidence(
                 sessionId = map["sessionId"] as? String ?: "",
                 type = EvidenceType.valueOf(map["type"] as? String ?: "SYSTEM_LOG"),
                 timestamp = map["timestamp"] as? Long ?: 0L,
-                filePath = (map["filePath"] as? String)?.takeIf { it.isNotBlank() },
+                latitude = map["latitude"] as? Double,
+                longitude = map["longitude"] as? Double,
+                accuracy = map["accuracy"] as? Float,
+                filePath = map["filePath"] as? String,
+                fileName = map["fileName"] as? String,
+                fileSize = map["fileSize"] as? Long,
+                transcription = map["transcription"] as? String,
+                confidence = map["confidence"] as? Float,
+                keyword = map["keyword"] as? String,
+                fullText = map["fullText"] as? String,
+                distressKeywords = map["distressKeywords"] as? List<String>,
+                distressLevel = (map["distressLevel"] as? String)?.let { DistressLevel.valueOf(it) },
+                isUploaded = map["isUploaded"] as? Boolean ?: false,
+                uploadTimestamp = map["uploadTimestamp"] as? Long,
+                notes = map["notes"] as? String,
+                uploadStatus = (map["uploadStatus"] as? String)?.let {
+                    EvidenceUploadStatus.valueOf(it)
+                } ?: EvidenceUploadStatus.PENDING,
+                uploadedAt = map["uploadedAt"] as? Long,
+                priority = (map["priority"] as? String)?.let {
+                    EvidencePriority.valueOf(it)
+                } ?: EvidencePriority.NORMAL,
+                verified = map["verified"] as? Boolean ?: false,
+                verifiedAt = map["verifiedAt"] as? Long,
+                verifiedBy = map["verifiedBy"] as? String,
                 metadata = map["metadata"] as? Map<String, Any> ?: emptyMap(),
-                localPath = (map["localPath"] as? String)?.takeIf { it.isNotBlank() },
-                firebaseStorageUrl = (map["firebaseStorageUrl"] as? String)?.takeIf { it.isNotBlank() },
-                uploadStatus = map["uploadStatus"] as? String ?: "pending",
-                uploadedAt = (map["uploadedAt"] as? Long)?.takeIf { it > 0L },
-                priority = EvidencePriority.valueOf(map["priority"] as? String ?: "NORMAL"),
-                verified = map["verified"] as? Boolean ?: false
+                localPath = map["localPath"] as? String,
+                firebaseStorageUrl = map["firebaseStorageUrl"] as? String,
+                description = map["description"] as? String ?: ""
             )
         }
 
-        // Factory methods for different evidence types
+        fun  fromJson(json: String): SafetyEvidence {
+            return gson.fromJson(json, SafetyEvidence::class.java)
+        }
 
+        /**
+         * ✅ ALIGNED: Factory methods with realistic states
+         */
         fun createLocationEvidence(
             sessionId: String,
             latitude: Double,
             longitude: Double,
             accuracy: Float,
             timestamp: Long = System.currentTimeMillis(),
-            address: String? = null
+            address: String? = null,
+            description: String = "Location captured during safety monitoring"
         ): SafetyEvidence {
             return SafetyEvidence(
                 sessionId = sessionId,
                 type = EvidenceType.LOCATION,
                 timestamp = timestamp,
-                metadata = mapOf(
-                    "latitude" to latitude,
-                    "longitude" to longitude,
-                    "accuracy" to accuracy,
-                    "address" to (address ?: ""),
-                    "mapsUrl" to "https://maps.google.com/?q=$latitude,$longitude"
-                ),
-                priority = EvidencePriority.HIGH
-            )
-        }
-
-        fun createPhotoEvidence(
-            sessionId: String,
-            filePath: String,
-            timestamp: Long = System.currentTimeMillis(),
-            imageSize: String? = null,
-            cameraFacing: String? = null
-        ): SafetyEvidence {
-            return SafetyEvidence(
-                sessionId = sessionId,
-                type = EvidenceType.PHOTO,
-                timestamp = timestamp,
-                filePath = filePath,
-                metadata = mapOf(
-                    "imageSize" to (imageSize ?: "unknown"),
-                    "cameraFacing" to (cameraFacing ?: "unknown"),
-                    "captureMethod" to "automatic_safety_monitoring"
-                ),
-                priority = EvidencePriority.HIGH
-            )
-        }
-
-        fun createAudioEvidence(
-            sessionId: String,
-            filePath: String,
-            timestamp: Long = System.currentTimeMillis(),
-            duration: Long? = null,
-            format: String = "wav"
-        ): SafetyEvidence {
-            return SafetyEvidence(
-                sessionId = sessionId,
-                type = EvidenceType.AUDIO,
-                timestamp = timestamp,
-                filePath = filePath,
-                metadata = mapOf(
-                    "duration" to (duration ?: 0L),
-                    "format" to format,
-                    "sampleRate" to 44100,
-                    "channels" to 1,
-                    "recordingMethod" to "background_continuous"
-                ),
-                priority = EvidencePriority.CRITICAL
-            )
-        }
-
-        fun createTranscriptionEvidence(
-            sessionId: String,
-            transcription: String,
-            confidence: Float,
-            timestamp: Long = System.currentTimeMillis(),
-            language: String = "en",
-            keywords: List<String> = emptyList()
-        ): SafetyEvidence {
-            return SafetyEvidence(
-                sessionId = sessionId,
-                type = EvidenceType.TRANSCRIPTION,
-                timestamp = timestamp,
-                metadata = mapOf(
-                    "transcription" to transcription,
-                    "confidence" to confidence,
-                    "language" to language,
-                    "keywords" to keywords,
-                    "wordCount" to transcription.split(" ").size,
-                    "hasDistressKeywords" to keywords.any {
-                        listOf("help", "emergency", "danger", "scared", "hurt").contains(it.lowercase())
-                    }
-                ),
-                priority = if (keywords.isNotEmpty()) EvidencePriority.CRITICAL else EvidencePriority.NORMAL
-            )
-        }
-
-        fun createSensorEvidence(
-            sessionId: String,
-            sensorType: String,
-            sensorData: Map<String, Any>,
-            timestamp: Long = System.currentTimeMillis()
-        ): SafetyEvidence {
-            return SafetyEvidence(
-                sessionId = sessionId,
-                type = EvidenceType.SENSOR,
-                timestamp = timestamp,
-                metadata = mapOf(
-                    "sensorType" to sensorType,
-                    "sensorData" to sensorData
-                ),
-                priority = EvidencePriority.LOW
-            )
-        }
-
-        fun createSystemLogEvidence(
-            sessionId: String,
-            logLevel: String,
-            message: String,
-            component: String,
-            timestamp: Long = System.currentTimeMillis()
-        ): SafetyEvidence {
-            return SafetyEvidence(
-                sessionId = sessionId,
-                type = EvidenceType.SYSTEM_LOG,
-                timestamp = timestamp,
-                metadata = mapOf(
-                    "logLevel" to logLevel,
-                    "message" to message,
-                    "component" to component,
-                    "deviceInfo" to getDeviceInfo()
-                ),
-                priority = if (logLevel == "ERROR") EvidencePriority.HIGH else EvidencePriority.LOW
+                latitude = latitude,
+                longitude = longitude,
+                accuracy = accuracy,
+                // ✅ FIXED: No duplication in metadata
+                metadata = buildMap {
+                    address?.let { put("address", it) }
+                    put("mapsUrl", "https://maps.google.com/?q=$latitude,$longitude")
+                    put("captureMethod", "automatic_location_tracking")
+                },
+                priority = EvidencePriority.HIGH,
+                description = description
+                // ✅ FIXED: Realistic defaults - not uploaded/verified yet
             )
         }
 
@@ -227,7 +262,8 @@ data class SafetyEvidence(
             sessionId: String,
             inputType: String,
             inputData: String,
-            timestamp: Long = System.currentTimeMillis()
+            timestamp: Long = System.currentTimeMillis(),
+            description: String = "User input during safety monitoring"
         ): SafetyEvidence {
             return SafetyEvidence(
                 sessionId = sessionId,
@@ -237,179 +273,219 @@ data class SafetyEvidence(
                     "inputType" to inputType,
                     "inputData" to inputData
                 ),
-                priority = EvidencePriority.HIGH
+                priority = EvidencePriority.NORMAL,
+                description = description
+
+            )
+
+        }
+
+        fun createPhotoEvidence(
+            sessionId: String,
+            filePath: String,
+            timestamp: Long = System.currentTimeMillis(),
+            description: String = "Photo captured during safety monitoring"
+        ): SafetyEvidence {
+            val file = File(filePath)
+            return SafetyEvidence(
+                sessionId = sessionId,
+                type = EvidenceType.PHOTO,
+                timestamp = timestamp,
+                filePath = filePath,
+                fileName = file.name,
+                fileSize = if (file.exists()) file.length() else null,
+                metadata = mapOf(
+                    "captureMethod" to "automatic_safety_monitoring",
+                    "fileExists" to file.exists()
+                ),
+                priority = EvidencePriority.HIGH,
+                description = description
+                // ✅ FIXED: Realistic defaults
             )
         }
 
-        private fun getDeviceInfo(): Map<String, String> {
-            return mapOf(
-                "manufacturer" to android.os.Build.MANUFACTURER,
-                "model" to android.os.Build.MODEL,
-                "osVersion" to android.os.Build.VERSION.RELEASE,
-                "apiLevel" to android.os.Build.VERSION.SDK_INT.toString()
+        fun createVoiceTriggerEvidence(
+            sessionId: String,
+            keyword: String,
+            fullText: String,
+            confidence: Float,
+            timestamp: Long,
+            description: String = "Voice trigger detected: \"$keyword\""
+        ): SafetyEvidence {
+            return SafetyEvidence(
+                sessionId = sessionId,
+                type = EvidenceType.VOICE_TRIGGER,
+                timestamp = timestamp,
+                keyword = keyword,
+                fullText = fullText,
+                confidence = confidence,
+                transcription = fullText,
+                metadata = mapOf(
+                    "triggerMethod" to "voice_recognition",
+                    "confidenceLevel" to when {
+                        confidence >= 0.9f -> "high"
+                        confidence >= 0.7f -> "medium"
+                        else -> "low"
+                    }
+                ),
+                priority = EvidencePriority.CRITICAL,
+                description = description
+                // ✅ FIXED: Realistic defaults
             )
         }
-    }
-}
 
-/**
- * Safety session data model
- */
-data class SafetySession(
-    val id: String,
-    val userId: String,
-    val startTime: Long,
-    val endTime: Long,
-    val evidenceCount: Int,
-    val locationCount: Int,
-    val photoCount: Int,
-    val audioCount: Int,
-    val transcriptionCount: Int,
-    val status: String, // active, completed, interrupted, error
-    val evidenceIds: List<String> = emptyList(),
-    val triggerMethod: String? = null, // manual, gesture, voice, automatic
-    val emergencyContacted: Boolean = false,
-    val summary: String? = null
-) {
-
-    fun getDurationMs(): Long = endTime - startTime
-    fun getDurationMinutes(): Long = getDurationMs() / (60 * 1000)
-    fun getDurationSeconds(): Long = getDurationMs() / 1000
-
-    fun getFormattedDuration(): String {
-        val minutes = getDurationMinutes()
-        val seconds = (getDurationSeconds() % 60)
-        return if (minutes > 0) {
-            "${minutes}m ${seconds}s"
-        } else {
-            "${seconds}s"
-        }
-    }
-
-    fun getFormattedStartTime(): String {
-        return SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault()).format(Date(startTime))
-    }
-
-    fun getFormattedEndTime(): String {
-        return SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault()).format(Date(endTime))
-    }
-
-    fun toJson(): String {
-        return Gson().toJson(this)
-    }
-
-    fun toFirestoreMap(): Map<String, Any> {
-        return mapOf(
-            "id" to id,
-            "userId" to userId,
-            "startTime" to startTime,
-            "endTime" to endTime,
-            "evidenceCount" to evidenceCount,
-            "locationCount" to locationCount,
-            "photoCount" to photoCount,
-            "audioCount" to audioCount,
-            "transcriptionCount" to transcriptionCount,
-            "status" to status,
-            "evidenceIds" to evidenceIds,
-            "triggerMethod" to (triggerMethod ?: ""),
-            "emergencyContacted" to emergencyContacted,
-            "summary" to (summary ?: "")
-        )
-    }
-
-    companion object {
-        fun fromJson(json: String): SafetySession {
-            return Gson().fromJson(json, SafetySession::class.java)
-        }
-
-        fun fromFirestoreMap(map: Map<String, Any>, documentId: String): SafetySession {
-            return SafetySession(
-                id = map["id"] as? String ?: documentId,
-                userId = map["userId"] as? String ?: "",
-                startTime = map["startTime"] as? Long ?: 0L,
-                endTime = map["endTime"] as? Long ?: 0L,
-                evidenceCount = (map["evidenceCount"] as? Long)?.toInt() ?: 0,
-                locationCount = (map["locationCount"] as? Long)?.toInt() ?: 0,
-                photoCount = (map["photoCount"] as? Long)?.toInt() ?: 0,
-                audioCount = (map["audioCount"] as? Long)?.toInt() ?: 0,
-                transcriptionCount = (map["transcriptionCount"] as? Long)?.toInt() ?: 0,
-                status = map["status"] as? String ?: "unknown",
-                evidenceIds = map["evidenceIds"] as? List<String> ?: emptyList(),
-                triggerMethod = (map["triggerMethod"] as? String)?.takeIf { it.isNotBlank() },
-                emergencyContacted = map["emergencyContacted"] as? Boolean ?: false,
-                summary = (map["summary"] as? String)?.takeIf { it.isNotBlank() }
+        fun createTranscriptionEvidence(
+            sessionId: String,
+            transcription: String,
+            confidence: Float,
+            timestamp: Long,
+            description: String = "Transcription captured"
+        ): SafetyEvidence {
+            return SafetyEvidence(
+                sessionId = sessionId,
+                type = EvidenceType.TRANSCRIPTION,
+                timestamp = timestamp,
+                transcription = transcription,
+                confidence = confidence,
+                metadata = mapOf(
+                    "confidenceLevel" to confidence,
+                    "source" to "automatic_transcription"
+                ),
+                priority = EvidencePriority.HIGH,
+                description = description
             )
         }
+
+        fun createDistressEvidence(
+            sessionId: String,
+            transcription: String,
+            keywords: List<String>,
+            timestamp: Long,
+            description: String = "Distress keywords detected: ${keywords.joinToString(", ")}"
+        ): SafetyEvidence {
+            val distressLevel = calculateDistressLevel(keywords)
+
+            return SafetyEvidence(
+                sessionId = sessionId,
+                type = EvidenceType.DISTRESS_DETECTION,
+                timestamp = timestamp,
+                transcription = transcription,
+                distressKeywords = keywords,
+                distressLevel = distressLevel,
+                confidence = 1.0f,
+                metadata = mapOf(
+                    "keywordCount" to keywords.size,
+                    "severityAnalysis" to distressLevel.name,
+                    "detectionMethod" to "keyword_analysis"
+                ),
+                priority = when (distressLevel) {
+                    DistressLevel.HIGH -> EvidencePriority.CRITICAL
+                    DistressLevel.MEDIUM -> EvidencePriority.HIGH
+                    else -> EvidencePriority.NORMAL
+                },
+                description = description
+                // ✅ FIXED: Realistic defaults
+            )
+        }
+
+
+        fun createRiskAssessmentEvidence(
+            sessionId: String,
+            assessment: com.safeguardme.app.data.models.RiskAssessment,
+            description: String = "Risk ${assessment.level.name} (${assessment.score}) detected by ${assessment.source}"
+        ): SafetyEvidence {
+            return SafetyEvidence(
+                sessionId = sessionId,
+                type = EvidenceType.SYSTEM_LOG,
+                timestamp = assessment.timestamp,
+                priority = when (assessment.level) {
+                    com.safeguardme.app.data.models.RiskLevel.CRITICAL -> EvidencePriority.CRITICAL
+                    com.safeguardme.app.data.models.RiskLevel.HIGH -> EvidencePriority.HIGH
+                    com.safeguardme.app.data.models.RiskLevel.MODERATE -> EvidencePriority.NORMAL
+                    com.safeguardme.app.data.models.RiskLevel.LOW -> EvidencePriority.NORMAL
+                    com.safeguardme.app.data.models.RiskLevel.UNKNOWN -> EvidencePriority.LOW
+                },
+                metadata = mapOf(
+                    "riskLevel" to assessment.level.name,
+                    "riskScore" to assessment.score,
+                    "factors" to assessment.factors,
+                    "recommendedAction" to assessment.recommendedAction,
+                    "source" to assessment.source
+                ) as Map<String, Any>,
+                description = description
+            )
+        }
+
+        fun createAudioEvidence(
+            sessionId: String,
+            filePath: String,
+            timestamp: Long = System.currentTimeMillis(),
+            duration: Long? = null,
+            format: String = "wav",
+            description: String = "Audio recording captured"
+        ): SafetyEvidence {
+            return SafetyEvidence(
+                sessionId = sessionId,
+                type = EvidenceType.AUDIO,
+                timestamp = timestamp,
+                filePath = filePath,
+                fileName = File(filePath).name,
+                fileSize = try { File(filePath).length() } catch (e: Exception) { null },
+                metadata = mapOf(
+                    "duration" to (duration ?: 0L),
+                    "format" to format,
+                    "sampleRate" to 44100,
+                    "channels" to 1,
+                    "recordingMethod" to "background_continuous"
+                ),
+                priority = EvidencePriority.CRITICAL,
+                description = description
+                // ✅ FIXED: Realistic defaults
+            )
+        }
+
+        private fun calculateDistressLevel(keywords: List<String>): DistressLevel {
+            val highUrgencyKeywords = listOf("911", "call police", "help me", "emergency")
+            val mediumUrgencyKeywords = listOf("danger", "scared", "hurt")
+
+            return when {
+                keywords.any { it.lowercase() in highUrgencyKeywords.map { k -> k.lowercase() } } -> DistressLevel.HIGH
+                keywords.any { it.lowercase() in mediumUrgencyKeywords.map { k -> k.lowercase() } } -> DistressLevel.MEDIUM
+                keywords.isNotEmpty() -> DistressLevel.LOW
+                else -> DistressLevel.NONE
+            }
+        }
     }
+
+    // ✅ ALIGNED: Consistent convenience methods
+    fun isLocationEvidence(): Boolean = type == EvidenceType.LOCATION
+    fun isPhotoEvidence(): Boolean = type == EvidenceType.PHOTO
+    fun isVoiceEvidence(): Boolean = type == EvidenceType.VOICE_TRIGGER || type == EvidenceType.TRANSCRIPTION
+    fun isDistressEvidence(): Boolean = type == EvidenceType.DISTRESS_DETECTION
+
+    fun hasHighDistress(): Boolean = distressLevel == DistressLevel.HIGH
+    fun hasAnyDistress(): Boolean = distressLevel != null && distressLevel != DistressLevel.NONE
+
+    fun needsUpload(): Boolean = !isUploaded && uploadStatus != EvidenceUploadStatus.FAILED
+    fun canBeVerified(): Boolean = isUploaded && !verified
+
+    @PropertyName("firestore_timestamp")
+    fun getFirestoreTimestamp(): Long = timestamp
 }
 
 /**
- * Evidence type enumeration
+ * ✅ ALIGNED: Clear upload status enum
  */
-enum class EvidenceType {
-    LOCATION,      // GPS coordinates and location data
-    PHOTO,         // Camera captured images
-    AUDIO,         // Audio recordings
-    TRANSCRIPTION, // Speech-to-text transcriptions
-    SENSOR,        // Device sensor data (accelerometer, etc.)
-    SYSTEM_LOG,    // System and app logs
-    USER_INPUT     // Direct user input or actions
+enum class EvidenceUploadStatus {
+    PENDING,
+    UPLOADING,
+    COMPLETED,
+    FAILED,
+    RETRYING
 }
 
 /**
- * Evidence priority levels
- */
-enum class EvidencePriority {
-    CRITICAL,  // Immediate attention required (emergency keywords, distress)
-    HIGH,      // Important evidence (location, photos, key events)
-    NORMAL,    // Regular monitoring data
-    LOW        // Background information (system logs, sensor data)
-}
-
-/**
- * Evidence analysis result
- */
-data class EvidenceAnalysisResult(
-    val sessionId: String,
-    val totalEvidence: Int,
-    val criticalEvidence: Int,
-    val locationPoints: Int,
-    val photosCapture: Int,
-    val audioMinutes: Int,
-    val transcriptionWords: Int,
-    val distressKeywordsDetected: Boolean,
-    val emergencyTriggered: Boolean,
-    val timelineSummary: List<TimelineEvent>,
-    val riskAssessment: RiskLevel
-)
-
-/**
- * Timeline event for evidence analysis
- */
-data class TimelineEvent(
-    val timestamp: Long,
-    val type: EvidenceType,
-    val description: String,
-    val priority: EvidencePriority,
-    val location: Pair<Double, Double>? = null
-) {
-    fun getFormattedTime(): String {
-        return SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
-    }
-}
-
-/**
- * Risk assessment levels
- */
-enum class RiskLevel {
-    LOW,      // Normal safety monitoring, no alerts
-    MEDIUM,   // Some concerning indicators
-    HIGH,     // Multiple risk factors detected
-    CRITICAL  // Immediate danger likely, emergency response needed
-}
-
-/**
- * Evidence validation result
+ * ✅ ALIGNED: Enhanced validation result
  */
 data class EvidenceValidationResult(
     val isValid: Boolean,
@@ -418,22 +494,20 @@ data class EvidenceValidationResult(
 ) {
     fun hasErrors(): Boolean = errors.isNotEmpty()
     fun hasWarnings(): Boolean = warnings.isNotEmpty()
-
     fun getErrorMessage(): String = errors.joinToString("; ")
     fun getWarningMessage(): String = warnings.joinToString("; ")
 }
 
-/**
- * Evidence search criteria
- */
-data class EvidenceSearchCriteria(
-    val sessionId: String? = null,
-    val type: EvidenceType? = null,
-    val priority: EvidencePriority? = null,
-    val startTime: Long? = null,
-    val endTime: Long? = null,
-    val hasLocation: Boolean? = null,
-    val uploadStatus: String? = null,
-    val verified: Boolean? = null,
-    val limit: Int = 100
-)
+// Keep existing enums unchanged
+enum class EvidenceType {
+    LOCATION, PHOTO, AUDIO, TRANSCRIPTION, SENSOR, SYSTEM_LOG,
+    USER_INPUT, DISTRESS_DETECTION, EMERGENCY_ESCALATION, VOICE_TRIGGER
+}
+
+enum class EvidencePriority {
+    CRITICAL, HIGH, NORMAL, LOW
+}
+
+enum class DistressLevel {
+    NONE, LOW, MEDIUM, HIGH
+}

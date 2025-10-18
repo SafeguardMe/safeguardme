@@ -7,11 +7,13 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,6 +40,12 @@ class SettingsRepository @Inject constructor(
         private val VOICE_DETECTION_ENABLED_KEY = booleanPreferencesKey("voice_detection_enabled")
         private val VOICE_DETECTION_KEYWORD_KEY = stringPreferencesKey("voice_detection_keyword")
         private val VOICE_DETECTION_SENSITIVITY_KEY = stringPreferencesKey("voice_detection_sensitivity")
+        val VOICE_DETECTION_ENABLED = booleanPreferencesKey("voice_detection_enabled")
+        val VOICE_DETECTION_SENSITIVITY = floatPreferencesKey("voice_detection_sensitivity")
+        val VOICE_BATTERY_OPTIMIZED = booleanPreferencesKey("voice_battery_optimized")
+        val VOICE_DETECTION_HISTORY = booleanPreferencesKey("voice_detection_history")
+        val VOICE_BACKGROUND_PROCESSING = booleanPreferencesKey("voice_background_processing")
+
     }
 
     // Dark mode setting
@@ -61,10 +69,10 @@ class SettingsRepository @Inject constructor(
     }
 
     suspend fun setVoiceDetectionEnabled(enabled: Boolean) {
-        Log.d(TAG, "🎤 Setting voice detection enabled: $enabled")
         context.dataStore.edit { preferences ->
-            preferences[VOICE_DETECTION_ENABLED_KEY] = enabled
+            preferences[VOICE_DETECTION_ENABLED] = enabled
         }
+        Log.d("SettingsRepository", "🔊 Voice detection enabled: $enabled")
     }
 
     suspend fun setVoiceDetectionKeyword(keyword: String?) {
@@ -78,11 +86,46 @@ class SettingsRepository @Inject constructor(
         }
     }
 
-    suspend fun setVoiceDetectionSensitivity(sensitivity: String) {
-        Log.d(TAG, "🎚️ Setting voice detection sensitivity: $sensitivity")
+    suspend fun setVoiceDetectionSensitivity(sensitivity: Float) {
+        val clampedSensitivity = sensitivity.coerceIn(0.1f, 1.0f)
         context.dataStore.edit { preferences ->
-            preferences[VOICE_DETECTION_SENSITIVITY_KEY] = sensitivity
+            preferences[VOICE_DETECTION_SENSITIVITY] = clampedSensitivity
         }
+        Log.d("SettingsRepository", "🎚️ Voice detection sensitivity: $clampedSensitivity")
+    }
+
+    suspend fun setVoiceDetectionHistory(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[VOICE_DETECTION_HISTORY] = enabled
+        }
+        Log.d("SettingsRepository", "📊 Voice detection history: $enabled")
+    }
+
+    suspend fun setVoiceBackgroundProcessing(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[VOICE_BACKGROUND_PROCESSING] = enabled
+        }
+        Log.d("SettingsRepository", "🔄 Voice background processing: $enabled")
+    }
+
+    suspend fun setVoiceBatteryOptimized(optimized: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[VOICE_BATTERY_OPTIMIZED] = optimized
+        }
+        Log.d("SettingsRepository", "🔋 Voice battery optimized: $optimized")
+    }
+
+
+    suspend fun getVoiceDetectionSettings(): VoiceDetectionSettings {
+        val preferences = context.dataStore.data.first()
+
+        return VoiceDetectionSettings(
+            enabled = preferences[VOICE_DETECTION_ENABLED] ?: false,
+            sensitivity = preferences[VOICE_DETECTION_SENSITIVITY] ?: 0.8f,
+            batteryOptimized = preferences[VOICE_BATTERY_OPTIMIZED] ?: true,
+            historyEnabled = preferences[VOICE_DETECTION_HISTORY] ?: true,
+            backgroundProcessing = preferences[VOICE_BACKGROUND_PROCESSING] ?: true
+        )
     }
 
     val voiceDetectionEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -150,9 +193,12 @@ class SettingsRepository @Inject constructor(
         val offlineModeAllowed: Boolean = true,
         val biometricEnabled: Boolean = false,
         val emergencyContactsOnly: Boolean = false,
-        val voiceDetectionEnabled: Boolean = false,
         val voiceDetectionKeyword: String? = null,
-        val voiceDetectionSensitivity: String = "medium" // low, medium, high
+        val voiceDetectionEnabled: Boolean = false,
+        val voiceDetectionSensitivity: Any = 0.8f,
+        val voiceBatteryOptimized: Boolean = true,
+        val voiceDetectionHistory: Boolean = true,
+        val voiceBackgroundProcessing: Boolean = true
     )
 
     val appSettings: Flow<AppSettings> = context.dataStore.data
@@ -163,11 +209,89 @@ class SettingsRepository @Inject constructor(
                 offlineModeAllowed = preferences[ALLOW_OFFLINE_MODE_KEY] ?: true,
                 biometricEnabled = preferences[BIOMETRIC_ENABLED_KEY] ?: false,
                 emergencyContactsOnly = preferences[EMERGENCY_CONTACTS_ONLY_KEY] ?: false,
-                voiceDetectionEnabled = preferences[VOICE_DETECTION_ENABLED_KEY] ?: false,
                 voiceDetectionKeyword = preferences[VOICE_DETECTION_KEYWORD_KEY],
-                voiceDetectionSensitivity = preferences[VOICE_DETECTION_SENSITIVITY_KEY] ?: "medium"
+                voiceDetectionEnabled = preferences[VOICE_DETECTION_ENABLED] ?: false,
+                voiceDetectionSensitivity = preferences[VOICE_DETECTION_SENSITIVITY] ?: 0.8f,
+                voiceBatteryOptimized = preferences[VOICE_BATTERY_OPTIMIZED] ?: true,
+                voiceDetectionHistory = preferences[VOICE_DETECTION_HISTORY] ?: true,
+                voiceBackgroundProcessing = preferences[VOICE_BACKGROUND_PROCESSING] ?: true
             )
         }
+}
 
+/**
+ * ✅ DATA CLASS: Voice detection specific settings
+ */
+data class VoiceDetectionSettings(
+    val enabled: Boolean = false,
+    val sensitivity: Float = 0.8f,
+    val batteryOptimized: Boolean = true,
+    val historyEnabled: Boolean = true,
+    val backgroundProcessing: Boolean = true
+) {
+    fun getSensitivityPercentage(): Int = (sensitivity * 100).toInt()
 
+    fun getSensitivityDescription(): String {
+        return when {
+            sensitivity >= 0.9f -> "Very High"
+            sensitivity >= 0.7f -> "High"
+            sensitivity >= 0.5f -> "Medium"
+            sensitivity >= 0.3f -> "Low"
+            else -> "Very Low"
+        }
+    }
+
+    fun isOptimalConfiguration(): Boolean {
+        return enabled && sensitivity in 0.6f..0.9f && batteryOptimized
+    }
+
+    fun getConfigurationSummary(): String {
+        return buildString {
+            append("Voice Detection: ${if (enabled) "ON" else "OFF"}")
+            if (enabled) {
+                append(" | Sensitivity: ${getSensitivityDescription()}")
+                append(" | Battery: ${if (batteryOptimized) "Optimized" else "High Performance"}")
+            }
+        }
+    }
+}
+
+/**
+ * ✅ UTILITY: Voice detection settings validation
+ */
+object VoiceDetectionSettingsValidator {
+
+    fun validateSensitivity(sensitivity: Float): ValidationResult {
+        return when {
+            sensitivity < 0.1f -> ValidationResult.Invalid("Sensitivity too low - minimum 0.1")
+            sensitivity > 1.0f -> ValidationResult.Invalid("Sensitivity too high - maximum 1.0")
+            sensitivity in 0.1f..0.3f -> ValidationResult.Warning("Low sensitivity may miss triggers")
+            sensitivity in 0.9f..1.0f -> ValidationResult.Warning("High sensitivity may cause false triggers")
+            else -> ValidationResult.Valid
+        }
+    }
+
+    fun validateConfiguration(settings: VoiceDetectionSettings): List<String> {
+        val issues = mutableListOf<String>()
+
+        if (settings.enabled && settings.sensitivity < 0.5f) {
+            issues.add("Low sensitivity may result in missed emergency triggers")
+        }
+
+        if (settings.enabled && !settings.batteryOptimized) {
+            issues.add("High performance mode will drain battery faster")
+        }
+
+        if (settings.enabled && !settings.backgroundProcessing) {
+            issues.add("Disabled background processing may reduce detection reliability")
+        }
+
+        return issues
+    }
+
+    sealed class ValidationResult {
+        object Valid : ValidationResult()
+        data class Warning(val message: String) : ValidationResult()
+        data class Invalid(val message: String) : ValidationResult()
+    }
 }

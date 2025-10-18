@@ -7,8 +7,12 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.storage.FirebaseStorage
 import com.safeguardme.app.data.models.EvidenceType
+import com.safeguardme.app.data.models.EvidenceUploadStatus
+import com.safeguardme.app.data.models.IncidentTimelineEntry
 import com.safeguardme.app.data.models.SafetyEvidence
 import com.safeguardme.app.data.models.SafetySession
+import com.safeguardme.app.data.models.SessionStatus
+import com.safeguardme.app.managers.EvidenceVault
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +35,8 @@ class SafetyEvidenceRepository @Inject constructor(
     private val storage: FirebaseStorage,
     private val auth: FirebaseAuth,
     private val userRepository: UserRepository,
-    private val storageRepository: StorageRepository
+    private val storageRepository: StorageRepository,
+    private val evidenceVault: EvidenceVault
 ) {
     companion object {
         private const val TAG = "SafetyEvidenceRepo"
@@ -182,7 +187,7 @@ class SafetyEvidenceRepository @Inject constructor(
                 photoCount = evidence.count { it.type == EvidenceType.PHOTO },
                 audioCount = evidence.count { it.type == EvidenceType.AUDIO },
                 transcriptionCount = evidence.count { it.type == EvidenceType.TRANSCRIPTION },
-                status = "completed",
+                status = SessionStatus.COMPLETED,
                 evidenceIds = evidence.map { it.id }
             )
 
@@ -194,6 +199,24 @@ class SafetyEvidenceRepository @Inject constructor(
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to create session summary", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateSessionSummary(session: SafetySession): Result<Unit> {
+        return runCatching {
+            saveSessionSummary(session)
+        }
+    }
+
+    suspend fun getIncidentTimeline(sessionId: String): Result<List<IncidentTimelineEntry>> {
+        return try {
+            val evidence = getEvidenceForSession(sessionId).getOrElse { emptyList() }
+            val entries = evidence.sortedBy { it.timestamp }
+                .map { it.toTimelineEntry() }
+            Result.success(entries)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to build incident timeline", e)
             Result.failure(e)
         }
     }
@@ -318,11 +341,10 @@ class SafetyEvidenceRepository @Inject constructor(
         val evidenceFile = File(evidenceDir, "${evidence.id}.json")
         val evidenceWithLocalPath = evidence.copy(
             localPath = evidenceFile.absolutePath,
-            uploadStatus = "pending"
         )
 
         // Save evidence metadata as JSON
-        evidenceFile.writeText(evidenceWithLocalPath.toJson())
+        evidenceVault.writeEncrypted(evidenceFile, evidenceWithLocalPath.toJson())
 
         return evidenceWithLocalPath
     }
@@ -386,8 +408,8 @@ class SafetyEvidenceRepository @Inject constructor(
                             if (uploadResult.isSuccess) {
                                 evidence.copy(
                                     firebaseStorageUrl = uploadResult.getOrNull(),
-                                    uploadStatus = "completed",
-                                    uploadedAt = System.currentTimeMillis()
+                                    uploadStatus = EvidenceUploadStatus.COMPLETED,
+                                    uploadedAt = System.currentTimeMillis(),
                                 )
                             } else {
                                 Log.e(TAG, "❌ File upload failed: ${uploadResult.exceptionOrNull()}")
@@ -395,10 +417,10 @@ class SafetyEvidenceRepository @Inject constructor(
                             }
                         } else {
                             Log.w(TAG, "⚠️ Evidence file not found: ${evidence.filePath}")
-                            evidence.copy(uploadStatus = "completed")
+                            evidence.copy( uploadStatus = EvidenceUploadStatus.COMPLETED,)
                         }
                     } else {
-                        evidence.copy(uploadStatus = "completed")
+                        evidence.copy( uploadStatus = EvidenceUploadStatus.COMPLETED,)
                     }
 
                     // ✅ STEP 3: Save evidence metadata to Firestore
@@ -491,7 +513,7 @@ class SafetyEvidenceRepository @Inject constructor(
                 .filter { it.isFile() && it.name.endsWith(".json") }
                 .mapNotNull { file ->
                     val evidence = loadEvidenceFromFile(file)
-                    if (evidence?.uploadStatus == "pending") file else null
+                    if (evidence?.uploadStatus == EvidenceUploadStatus.PENDING) file else null
                 }
                 .toList()
         } catch (e: Exception) {
@@ -502,8 +524,22 @@ class SafetyEvidenceRepository @Inject constructor(
 
     private fun loadEvidenceFromFile(file: File): SafetyEvidence? {
         return try {
-            val json = file.readText()
-            SafetyEvidence.fromJson(json)
+            val result = evidenceVault.readEncrypted(file)
+            if (result.content == null) {
+                Log.w(TAG, "Evidence file ${file.name} is empty or unreadable")
+                return null
+            }
+
+            if (result.tampered) {
+                Log.w(TAG, "⚠️ Integrity mismatch for ${file.name}")
+            }
+
+            val evidence = SafetyEvidence.fromJson(result.content)
+            if (result.tampered) {
+                pendingUploads.add(evidence.id)
+                evidenceVault.clearTamperFlag(file.name)
+            }
+            evidence
         } catch (e: Exception) {
             Log.w(TAG, "Failed to load evidence from ${file.name}", e)
             null
@@ -515,10 +551,10 @@ class SafetyEvidenceRepository @Inject constructor(
             val evidence = loadEvidenceFromFile(evidenceFile)
             if (evidence != null) {
                 val uploadedEvidence = evidence.copy(
-                    uploadStatus = "completed",
-                    uploadedAt = System.currentTimeMillis()
+                    uploadStatus = EvidenceUploadStatus.COMPLETED,
+                    uploadedAt = System.currentTimeMillis(),
                 )
-                evidenceFile.writeText(uploadedEvidence.toJson())
+                evidenceVault.writeEncrypted(evidenceFile, uploadedEvidence.toJson())
                 pendingUploads.remove(evidence.id)
             }
         } catch (e: Exception) {
@@ -530,7 +566,7 @@ class SafetyEvidenceRepository @Inject constructor(
         try {
             // Save locally
             val sessionFile = File(getEvidenceDirectory(), "${session.id}_summary.json")
-            sessionFile.writeText(session.toJson())
+            evidenceVault.writeEncrypted(sessionFile, session.toJson())
 
             // Upload to Firebase
             val user = userRepository.getCurrentUser().firstOrNull()
@@ -612,6 +648,38 @@ class SafetyEvidenceRepository @Inject constructor(
             dir.mkdirs()
         }
         return dir
+    }
+
+    private fun SafetyEvidence.toTimelineEntry(): IncidentTimelineEntry {
+        val label = when (type) {
+            EvidenceType.LOCATION -> "Location Update"
+            EvidenceType.PHOTO -> "Photo Captured"
+            EvidenceType.AUDIO -> "Audio Snippet"
+            EvidenceType.VOICE_TRIGGER, EvidenceType.TRANSCRIPTION -> "Voice Trigger"
+            EvidenceType.DISTRESS_DETECTION -> "Distress Keywords"
+            EvidenceType.EMERGENCY_ESCALATION -> "Emergency Escalation"
+            else -> "System Event"
+        }
+
+        val detail = buildString {
+            if (description.isNotBlank()) {
+                append(description.take(160))
+            } else {
+                when (type) {
+                    EvidenceType.LOCATION -> append("Lat ${latitude}, Lon ${longitude}")
+                    EvidenceType.VOICE_TRIGGER, EvidenceType.TRANSCRIPTION -> append(keyword ?: "Voice input")
+                    EvidenceType.DISTRESS_DETECTION -> append(distressKeywords?.joinToString() ?: "Distress signal")
+                    else -> append(metadata.toString())
+                }
+            }
+        }
+
+        return IncidentTimelineEntry(
+            timestamp = timestamp,
+            label = label,
+            detail = detail,
+            evidenceType = type
+        )
     }
 
     private fun isNetworkAvailable(): Boolean {

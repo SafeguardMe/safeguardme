@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,6 +42,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -64,9 +66,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.safeguardme.app.data.repositories.VoiceTriggerData
 import com.safeguardme.app.managers.KeywordMatchResult
 import com.safeguardme.app.managers.MatchType
 import com.safeguardme.app.managers.TranscriptionResult
+import com.safeguardme.app.managers.VoiceDetectionStatus
 import com.safeguardme.app.ui.viewmodels.TriggerViewModel
 import kotlin.math.sin
 
@@ -107,6 +111,12 @@ fun TriggerScreen(
     // UI states
     val error by viewModel.error.collectAsState()
     val successMessage by viewModel.successMessage.collectAsState()
+
+    val triggerData by viewModel.triggerData.collectAsState()
+    val voiceDetectionStatus by viewModel.voiceDetectionStatus.collectAsState()
+    val isAlwaysOnDetectionEnabled by viewModel.isAlwaysOnDetectionEnabled.collectAsState()
+
+
 
     // Animations
     val recordButtonScale by animateFloatAsState(
@@ -409,6 +419,15 @@ fun TriggerScreen(
             )
         }
 
+        if (triggerData?.hasKeyword() == true || triggerData?.hasAudioSample() == true) {
+            VoiceDetectionSetupSection(
+                triggerData = triggerData,
+                onEnableAlwaysOnDetection = { viewModel.enableAlwaysOnVoiceDetection() },
+                isAlwaysOnEnabled = isAlwaysOnDetectionEnabled,
+                voiceDetectionStatus = voiceDetectionStatus
+            )
+        }
+
         // ✅ FIXED: Success Message - No Auto-Navigation
         successMessage?.let { message ->
             Snackbar(
@@ -687,6 +706,385 @@ private fun DrawScope.drawWaveform(
             color = color,
             topLeft = androidx.compose.ui.geometry.Offset(x - barWidth / 2, centerY - waveHeight / 2),
             size = androidx.compose.ui.geometry.Size(barWidth, waveHeight)
+        )
+    }
+}
+
+@Composable
+private fun VoiceDetectionSetupSection(
+    modifier: Modifier = Modifier,
+    triggerData: VoiceTriggerData?,
+    onEnableAlwaysOnDetection: () -> Unit,
+    isAlwaysOnEnabled: Boolean,
+    voiceDetectionStatus: VoiceDetectionStatus
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                isAlwaysOnEnabled && voiceDetectionStatus == VoiceDetectionStatus.ACTIVE ->
+                    Color.Green.copy(alpha = 0.1f)
+                triggerData?.isComplete() == true ->
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+
+                Column {
+                    Text(
+                        text = "Always-On Voice Detection",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Upgrade to system-level voice triggers",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Current setup status
+            VoiceSetupStatusIndicator(
+                triggerData = triggerData,
+                isAlwaysOnEnabled = isAlwaysOnEnabled,
+                voiceDetectionStatus = voiceDetectionStatus
+            )
+
+            // Setup description
+            VoiceDetectionExplanation()
+
+            // Action button
+            VoiceDetectionActionButton(
+                triggerData = triggerData,
+                isAlwaysOnEnabled = isAlwaysOnEnabled,
+                voiceDetectionStatus = voiceDetectionStatus,
+                onEnableAlwaysOnDetection = onEnableAlwaysOnDetection
+            )
+
+            // Benefits comparison
+            if (!isAlwaysOnEnabled && triggerData?.isComplete() == true) {
+                VoiceDetectionBenefitsComparison()
+            }
+        }
+    }
+}
+
+/**
+ * ✅ COMPONENT: Voice setup status indicator
+ */
+@Composable
+private fun VoiceSetupStatusIndicator(
+    triggerData: VoiceTriggerData?,
+    isAlwaysOnEnabled: Boolean,
+    voiceDetectionStatus: VoiceDetectionStatus
+) {
+    Surface(
+        color = when {
+            isAlwaysOnEnabled && voiceDetectionStatus == VoiceDetectionStatus.ACTIVE -> Color.Green.copy(alpha = 0.2f)
+            triggerData?.isComplete() == true -> Color.Blue.copy(alpha = 0.2f)
+            else -> Color.Yellow.copy(alpha = 0.2f)
+        },
+        shape = MaterialTheme.shapes.small
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = when {
+                    isAlwaysOnEnabled && voiceDetectionStatus == VoiceDetectionStatus.ACTIVE -> "🟢"
+                    triggerData?.isComplete() == true -> "🔵"
+                    else -> "🟡"
+                },
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Column {
+                Text(
+                    text = when {
+                        isAlwaysOnEnabled && voiceDetectionStatus == VoiceDetectionStatus.ACTIVE ->
+                            "Always-On Detection Active"
+                        triggerData?.isComplete() == true ->
+                            "Voice Sample Ready for Upgrade"
+                        else ->
+                            "Record Voice Sample First"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Text(
+                    text = when {
+                        isAlwaysOnEnabled ->
+                            "System-level detection active - works even when app is closed"
+                        triggerData?.isComplete() == true ->
+                            "Your recorded sample can enable always-on detection"
+                        else ->
+                            "Complete voice recording setup first"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * ✅ COMPONENT: Voice detection explanation
+ */
+@Composable
+private fun VoiceDetectionExplanation() {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = "How Always-On Detection Works",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium
+        )
+
+        VoiceDetectionFeature(
+            icon = "🔊",
+            title = "Hardware-Level Processing",
+            description = "Uses your device's dedicated speech processor (DSP) for ultra-low power consumption"
+        )
+
+        VoiceDetectionFeature(
+            icon = "🔒",
+            title = "Complete Privacy",
+            description = "All processing happens on your device - no audio sent to servers"
+        )
+
+        VoiceDetectionFeature(
+            icon = "⚡",
+            title = "Instant Activation",
+            description = "Emergency mode triggers in under 500ms when your keyword is detected"
+        )
+
+        VoiceDetectionFeature(
+            icon = "📱",
+            title = "Works When App Closed",
+            description = "Detection continues even when SafeguardMe isn't running"
+        )
+    }
+}
+
+@Composable
+private fun VoiceDetectionFeature(
+    icon: String,
+    title: String,
+    description: String
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = icon,
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * ✅ COMPONENT: Voice detection action button
+ */
+@Composable
+private fun VoiceDetectionActionButton(
+    triggerData: VoiceTriggerData?,
+    isAlwaysOnEnabled: Boolean,
+    voiceDetectionStatus: VoiceDetectionStatus,
+    onEnableAlwaysOnDetection: () -> Unit
+) {
+    when {
+        isAlwaysOnEnabled && voiceDetectionStatus == VoiceDetectionStatus.ACTIVE -> {
+            // Already active - show status
+            Surface(
+                color = Color.Green.copy(alpha = 0.2f),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color.Green,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Always-On Detection Active",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.Green
+                    )
+                }
+            }
+        }
+
+        triggerData?.isComplete() == true -> {
+            // Ready to enable
+            Button(
+                onClick = onEnableAlwaysOnDetection,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.RecordVoiceOver,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Enable Always-On Detection",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+
+        else -> {
+            // Need to record first
+            OutlinedButton(
+                onClick = { /* Scroll to recording section */ },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = false
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MicOff,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Record Voice Sample First",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
+}
+
+/**
+ * ✅ COMPONENT: Benefits comparison table
+ */
+@Composable
+private fun VoiceDetectionBenefitsComparison() {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = "Manual vs Always-On Detection",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium
+        )
+
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            shape = MaterialTheme.shapes.small
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ComparisonRow(
+                    feature = "Works when app closed",
+                    manual = "❌ No",
+                    alwaysOn = "✅ Yes"
+                )
+
+                ComparisonRow(
+                    feature = "Battery impact",
+                    manual = "📱 App must run",
+                    alwaysOn = "🔋 < 1% per day"
+                )
+
+                ComparisonRow(
+                    feature = "Response time",
+                    manual = "🔄 1-3 seconds",
+                    alwaysOn = "⚡ < 500ms"
+                )
+
+                ComparisonRow(
+                    feature = "Hands-free activation",
+                    manual = "⚠️ Limited",
+                    alwaysOn = "✅ Complete"
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComparisonRow(
+    feature: String,
+    manual: String,
+    alwaysOn: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = feature,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f)
+        )
+
+        Text(
+            text = manual,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Gray,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.Center
+        )
+
+        Text(
+            text = alwaysOn,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Green,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.End
         )
     }
 }

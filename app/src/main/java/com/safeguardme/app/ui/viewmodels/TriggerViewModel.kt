@@ -5,21 +5,32 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.safeguardme.app.data.repositories.StorageRepository
 import com.safeguardme.app.data.repositories.UserRepository
-import com.safeguardme.app.utils.FirebaseUtils
-import com.safeguardme.app.managers.PermissionManager
+import com.safeguardme.app.data.repositories.VoiceTriggerData
 import com.safeguardme.app.managers.AppPermission
-import com.safeguardme.app.managers.SpeechRecognitionManager
-import com.safeguardme.app.managers.TranscriptionResult
 import com.safeguardme.app.managers.KeywordMatchResult
 import com.safeguardme.app.managers.MatchType
+import com.safeguardme.app.managers.PermissionManager
+import com.safeguardme.app.managers.SpeechRecognitionManager
+import com.safeguardme.app.managers.TranscriptionResult
+import com.safeguardme.app.managers.VoiceDetectionManager
+import com.safeguardme.app.managers.VoiceDetectionStatus
+import com.safeguardme.app.utils.FirebaseUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
@@ -31,6 +42,16 @@ class TriggerViewModel @Inject constructor(
     private val storageRepository: StorageRepository,
     private val permissionManager: PermissionManager // ✅ NEW: Inject PermissionManager
 ) : ViewModel() {
+
+    @Inject
+    lateinit var voiceDetectionManager: VoiceDetectionManager
+
+    // Always-on detection state
+    private val _isAlwaysOnDetectionEnabled = MutableStateFlow(false)
+    val isAlwaysOnDetectionEnabled = _isAlwaysOnDetectionEnabled.asStateFlow()
+
+    private val _voiceDetectionStatus = MutableStateFlow(VoiceDetectionStatus.UNKNOWN)
+    val voiceDetectionStatus = _voiceDetectionStatus.asStateFlow()
 
     // ✅ NEW: Permission state tracking
     private val _permissionStatus = MutableStateFlow(PermissionCheckResult())
@@ -90,6 +111,9 @@ class TriggerViewModel @Inject constructor(
     // Detection status (Phase 1: always OFF)
     private val _detectionEnabled = MutableStateFlow(false)
     val detectionEnabled: StateFlow<Boolean> = _detectionEnabled.asStateFlow()
+
+    private val _triggerData = MutableStateFlow<VoiceTriggerData?>(null)
+    val triggerData: StateFlow<VoiceTriggerData?> = _triggerData.asStateFlow()
 
     // ✅ ENHANCED: Form validation includes permission check
     val canSave: StateFlow<Boolean> = combine(
@@ -155,6 +179,106 @@ class TriggerViewModel @Inject constructor(
                 )
             }.collect { result ->
                 _permissionStatus.value = result
+            }
+        }
+    }
+
+    private fun initializeAlwaysOnDetection() {
+        viewModelScope.launch {
+            combine(
+                voiceDetectionManager.isVoiceDetectionEnabled,
+                voiceDetectionManager.voiceDetectionStatus
+            ) { enabled, status ->
+                _isAlwaysOnDetectionEnabled.value = enabled
+                _voiceDetectionStatus.value = status
+            }.collect()
+        }
+    }
+
+    /**
+     * ✅ FUNCTION: Enable always-on voice detection using existing voice data
+     */
+    fun enableAlwaysOnVoiceDetection() {
+        viewModelScope.launch {
+            try {
+                Log.d("TriggerViewModel", "🔊 Enabling always-on voice detection")
+
+                // Get current trigger data
+                val currentTriggerData = _triggerData.value
+
+                if (currentTriggerData?.isComplete() != true) {
+                    _error.value = "Please complete voice recording setup first"
+                    return@launch
+                }
+
+                // Update voice detection manager with current keyword
+                val keyword = currentTriggerData.keyword
+                if (!keyword.isNullOrBlank()) {
+                    val updateResult = voiceDetectionManager.updateTriggerKeyword(keyword)
+                    if (updateResult.isFailure) {
+                        _error.value = "Failed to set trigger keyword: ${updateResult.exceptionOrNull()?.message}"
+                        return@launch
+                    }
+                }
+
+                // Enable always-on detection
+                val enableResult = voiceDetectionManager.enableVoiceDetection()
+                if (enableResult.isSuccess) {
+                    Log.i("TriggerViewModel", "✅ Always-on voice detection enabled")
+
+                    // Show success message
+                    _successMessage.value = "Always-on voice detection enabled! Your device will now listen for \"$keyword\" even when the app is closed."
+
+                    // Optional: Show system settings to complete setup
+                    showVoiceInteractionSettings()
+
+                } else {
+                    val error = enableResult.exceptionOrNull()
+                    _error.value = "Failed to enable always-on detection: ${error?.message}"
+
+                    if (error?.message?.contains("permission") == true) {
+                        // Guide user to grant permissions
+                        _error.value = "Please grant microphone permission for always-on voice detection"
+                    } else if (error?.message?.contains("service") == true) {
+                        // Guide user to voice interaction settings
+                        showVoiceInteractionSettings()
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("TriggerViewModel", "❌ Error enabling always-on voice detection", e)
+                _error.value = "Error enabling always-on detection: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * ✅ FUNCTION: Show voice interaction settings for user configuration
+     */
+    private fun showVoiceInteractionSettings() {
+        // This would typically be handled by the Activity/Fragment
+        // to launch the system voice interaction settings
+        Log.d("TriggerViewModel", "📱 Showing voice interaction settings")
+
+        // The UI layer would handle this intent:
+        // val intent = Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
+        // startActivity(intent)
+    }
+
+    /**
+     * ✅ FUNCTION: Test always-on voice detection
+     */
+    fun testAlwaysOnVoiceDetection() {
+        viewModelScope.launch {
+            try {
+                val result = voiceDetectionManager.testVoiceDetection()
+                if (result.isSuccess) {
+                    _successMessage.value = "Voice detection test completed: ${result.getOrNull()}"
+                } else {
+                    _error.value = "Voice detection test failed: ${result.exceptionOrNull()?.message}"
+                }
+            } catch (e: Exception) {
+                _error.value = "Test error: ${e.message}"
             }
         }
     }

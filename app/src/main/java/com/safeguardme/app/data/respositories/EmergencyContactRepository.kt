@@ -11,10 +11,12 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.ktx.snapshots
 import com.safeguardme.app.data.models.EmergencyContact
+import com.safeguardme.app.data.models.NotificationMethod
 import com.safeguardme.app.data.models.validateContactList
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
@@ -313,16 +315,18 @@ class EmergencyContactRepository @Inject constructor(
             Log.i(TAG, "Deleting emergency contact: $contactId")
 
             val collection = getUserContactsCollection()
+            val contactRef = collection.document(contactId)
+            val snapshot = contactRef.get().await()
 
-            // Soft delete by marking as inactive
-            collection.document(contactId)
-                .set(mapOf(
-                    "isActive" to false,
-                    "deletedAt" to com.google.firebase.Timestamp.now()
-                ), SetOptions.merge())
-                .await()
+            if (!snapshot.exists()) {
+                Log.w(TAG, "⚠️ Tried to delete non-existent contact: $contactId")
+                return@executeWithRetry Result.success(Unit)
+            }
 
+            contactRef.delete().await()
             Log.i(TAG, "✅ Deleted emergency contact: $contactId")
+
+            cleanUpUserEmergencyContacts(contactId)
             Result.success(Unit)
         }
     }
@@ -340,6 +344,46 @@ class EmergencyContactRepository @Inject constructor(
 
             Log.d(TAG, "Found ${emergencyContacts.size} emergency-ready contacts")
             Result.success(emergencyContacts)
+        }
+    }
+
+
+    /**
+     * ✅ NEW: Get contacts that can receive SMS notifications
+     */
+    suspend fun getSMSCapableContacts(): Result<List<EmergencyContact>> {
+        return executeWithRetry {
+            val allContacts = getAllContacts().getOrElse { emptyList() }
+            val smsContacts = allContacts
+                .filter {
+                    it.isActive &&
+                            it.canReceiveEmergencyAlerts &&
+                            it.notificationMethod != NotificationMethod.NONE &&
+                            (it.notificationMethod == NotificationMethod.SMS_ONLY ||
+                                    it.notificationMethod == NotificationMethod.SMS_AND_CALL ||
+                                    it.notificationMethod == NotificationMethod.EMAIL_AND_SMS ||
+                                    it.notificationMethod == NotificationMethod.ALL_METHODS)
+                }
+                .sortedBy { it.priority }
+
+            Log.d(TAG, "Found ${smsContacts.size} SMS-capable contacts")
+            Result.success(smsContacts)
+        }
+    }
+
+
+    /**
+     * ✅ NEW: Get high-priority SMS contacts for critical emergencies
+     */
+    suspend fun getCriticalSMSContacts(): Result<List<EmergencyContact>> {
+        return executeWithRetry {
+            val smsContacts = getSMSCapableContacts().getOrElse { emptyList() }
+            val criticalContacts = smsContacts
+                .filter { it.isHighPriority() }
+                .take(3) // Limit to top 3 for immediate response
+
+            Log.d(TAG, "Found ${criticalContacts.size} critical SMS contacts")
+            Result.success(criticalContacts)
         }
     }
 
@@ -700,6 +744,22 @@ class EmergencyContactRepository @Inject constructor(
             getAllContacts()
             Log.i(TAG, "✅ Emergency contacts refreshed successfully")
             Result.success(Unit)
+        }
+    }
+
+    private suspend fun cleanUpUserEmergencyContacts(contactId: String) {
+        runCatching {
+            val currentUser = userRepository.getCurrentUser().firstOrNull() ?: return@runCatching
+            val updatedIds = currentUser.emergencyContacts.filterNot { it == contactId }
+
+            if (updatedIds.size != currentUser.emergencyContacts.size) {
+                userRepository.updateEmergencyContacts(updatedIds)
+                    .onFailure { error ->
+                        Log.w(TAG, "Failed to update user emergency contacts after delete", error)
+                    }
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to clean up user emergency contact references", error)
         }
     }
 

@@ -574,7 +574,7 @@ fun ProfileScreen(
 }
 
 @Composable
-private fun SettingItem(
+fun SettingItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     description: String,

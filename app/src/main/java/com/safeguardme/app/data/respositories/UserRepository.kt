@@ -88,9 +88,20 @@ class UserRepository @Inject constructor(
                     com.safeguardme.app.data.models.NotificationPreferences()
                 } ?: com.safeguardme.app.data.models.NotificationPreferences(),
 
-                emergencySettings = documentData["emergencySettings"]?.let {
-                    // Handle emergency settings safely
-                    com.safeguardme.app.data.models.EmergencySettings()
+                emergencySettings = (documentData["emergencySettings"] as? Map<*, *>)?.let { map ->
+                    com.safeguardme.app.data.models.EmergencySettings(
+                        autoLocationSharing = map["autoLocationSharing"] as? Boolean ?: true,
+                        emergencyCallEnabled = map["emergencyCallEnabled"] as? Boolean ?: true,
+                        panicButtonEnabled = map["panicButtonEnabled"] as? Boolean ?: true,
+                        voiceActivationEnabled = map["voiceActivationEnabled"] as? Boolean ?: false,
+                        emergencyRecordingEnabled = map["emergencyRecordingEnabled"] as? Boolean ?: false,
+                        automaticCheck = map["automaticCheck"] as? Boolean ?: true,
+                        checkInFrequencyMinutes = (map["checkInFrequencyMinutes"] as? Number)?.toInt() ?: 60,
+                        maxResponseTimeMinutes = (map["maxResponseTimeMinutes"] as? Number)?.toInt() ?: 5,
+                        volumeGestureEnabled = map["volumeGestureEnabled"] as? Boolean ?: true,
+                        shakeGestureEnabled = map["shakeGestureEnabled"] as? Boolean ?: true,
+                        powerGestureEnabled = map["powerGestureEnabled"] as? Boolean ?: false
+                    )
                 } ?: com.safeguardme.app.data.models.EmergencySettings()
             )
 
@@ -684,6 +695,41 @@ class UserRepository @Inject constructor(
     } catch (e: Exception) {
         Log.e("UserRepository", "❌ Failed to update emergency contacts", e)
         Result.failure(SecurityException("Failed to update emergency contacts: ${e.message}"))
+    }
+
+    suspend fun updateGestureSettings(
+        volumeEnabled: Boolean,
+        shakeEnabled: Boolean,
+        powerEnabled: Boolean
+    ): Result<Unit> = try {
+        val currentUser = auth.currentUser ?: return Result.failure(SecurityException("User must be authenticated"))
+
+        usersCollection.document(currentUser.uid)
+            .set(
+                mapOf(
+                    "emergencySettings.volumeGestureEnabled" to volumeEnabled,
+                    "emergencySettings.shakeGestureEnabled" to shakeEnabled,
+                    "emergencySettings.powerGestureEnabled" to powerEnabled,
+                    "lastActiveAt" to System.currentTimeMillis()
+                ),
+                SetOptions.merge()
+            )
+            .await()
+
+        _currentUserFlow.value = _currentUserFlow.value?.let { user ->
+            user.copy(
+                emergencySettings = user.emergencySettings.copy(
+                    volumeGestureEnabled = volumeEnabled,
+                    shakeGestureEnabled = shakeEnabled,
+                    powerGestureEnabled = powerEnabled
+                )
+            )
+        }
+
+        Result.success(Unit)
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ Failed to update gesture settings", e)
+        Result.failure(SecurityException("Failed to update gesture settings: ${e.message}"))
     }
 }
 

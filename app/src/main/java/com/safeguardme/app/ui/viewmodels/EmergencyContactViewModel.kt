@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -169,6 +170,9 @@ class EmergencyContactViewModel @Inject constructor(
             try {
                 repository.deleteContact(contactId)
                     .onSuccess {
+                        _contacts.update { contacts ->
+                            contacts.filterNot { it.id == contactId }
+                        }
                         _successMessage.value = "Contact deleted successfully"
                     }
                     .onFailure { error ->
