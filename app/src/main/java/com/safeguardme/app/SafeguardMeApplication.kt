@@ -7,7 +7,9 @@ import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.safeguardme.app.managers.EmergencyGestureManager
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 
 @HiltAndroidApp
 class SafeguardMeApplication : Application() {
@@ -15,6 +17,9 @@ class SafeguardMeApplication : Application() {
     companion object {
         private const val TAG = "SafeguardMeApplication"
     }
+
+    @Inject
+    lateinit var emergencyGestureManager: EmergencyGestureManager
 
     override fun onCreate() {
         super.onCreate()
@@ -43,6 +48,10 @@ class SafeguardMeApplication : Application() {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Debug/Security setup failed", e)
         }
+
+        // Touch the lazy-injected gesture manager so background monitoring is initialised eagerly.
+        runCatching { emergencyGestureManager.toString() }
+            .onFailure { Log.e(TAG, "❌ EmergencyGestureManager init failed", it) }
 
         Log.d(TAG, "✅ Application onCreate completed")
     }

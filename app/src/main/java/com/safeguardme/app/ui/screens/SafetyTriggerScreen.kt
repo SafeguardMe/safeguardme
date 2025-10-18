@@ -2,9 +2,11 @@
 package com.safeguardme.app.ui.screens
 
 import android.content.Context
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -26,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Battery6Bar
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Email
@@ -67,15 +70,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.view.ViewCompat.performHapticFeedback
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.safeguardme.app.data.models.RiskAssessment
+import com.safeguardme.app.data.models.RiskLevel
+import com.safeguardme.app.data.models.SafetyCoachPlan
 import com.safeguardme.app.data.models.SafetyStatus
+import com.safeguardme.app.data.repositories.VoiceDetectionSettings
 import com.safeguardme.app.managers.AppPermission
+import com.safeguardme.app.managers.VoiceDetectionStatus
+import com.safeguardme.app.ui.components.VoiceKeywordSection
+import com.safeguardme.app.ui.components.VoiceSensitivitySection
 import com.safeguardme.app.ui.viewmodels.MonitoringStats
 import com.safeguardme.app.ui.viewmodels.SafetyPermissionStatus
 import com.safeguardme.app.ui.viewmodels.SafetyTriggerViewModel
@@ -107,6 +117,15 @@ fun SafetyTriggerScreen(
     val permissionWarnings by viewModel.permissionWarnings.collectAsState()
     val canActivateSafety by viewModel.canActivateSafety.collectAsState()
     val canCollectFullEvidence by viewModel.canCollectFullEvidence.collectAsState()
+    val safetyCoachPlan by viewModel.safetyCoachPlan.collectAsState()
+    val recoveryPrompts by viewModel.recoveryPrompts.collectAsState()
+    val riskAssessments by viewModel.riskAssessments.collectAsState()
+
+    val voiceDetectionEnabled by viewModel.voiceDetectionEnabled.collectAsState()
+    val voiceDetectionStatus by viewModel.voiceDetectionStatus.collectAsState()
+    val currentVoiceKeyword by viewModel.currentVoiceKeyword.collectAsState()
+
+    val isServiceRunning by viewModel.isServiceRunning.collectAsState()
 
     // Check permissions on screen entry
     LaunchedEffect(Unit) {
@@ -323,19 +342,32 @@ fun SafetyTriggerScreen(
                         onShakeToggle = viewModel::toggleShakeTrigger,
                         onPowerToggle = viewModel::togglePowerButtonTrigger,
                         canActivateGestures = canActivateSafety,
-                        onRequestPermissions = { viewModel.showPermissionDialog(AppPermission.AUDIO_RECORDING) }
+                        onRequestPermissions = {
+                            // ✅ ENHANCED: Request multiple essential permissions
+                            viewModel.requestEssentialPermissions()
+                        }
                     )
                 }
             }
 
             if (safetyStatus == SafetyStatus.DISABLED) {
                 item {
-                    /*VoiceDetectionToggleCard(
-                        voiceDetectionEnabled = viewModel.voiceDetectionEnabled.collectAsState().value,
-                        onToggleVoiceDetection = null,
-                        canActivateVoiceDetection = canActivateSafety,
-                        onRequestPermissions = { viewModel.showPermissionDialog(AppPermission.AUDIO_RECORDING) }
-                    )*/
+                    BackgroundVoiceDetectionCard(
+                        voiceDetectionEnabled = voiceDetectionEnabled,
+                        voiceDetectionStatus = voiceDetectionStatus,
+                        currentKeyword = currentVoiceKeyword,
+                        onToggleVoiceDetection = {
+                            // ✅ ENHANCED: ViewModel should handle permission checking
+                            viewModel.toggleVoiceDetection()
+                        },
+                        onConfigureKeyword = { viewModel.configureVoiceKeyword() },
+                        canEnableVoiceDetection = permissionStatus.canRecordAudio,
+                        isServiceRunning = isServiceRunning,
+                        onRequestMicrophonePermission = {
+                            // ✅ NEW: Specific microphone permission request
+                            viewModel.showPermissionDialog(AppPermission.AUDIO_RECORDING)
+                        }
+                    )
                 }
             }
 
@@ -378,6 +410,17 @@ fun SafetyTriggerScreen(
                     MonitoringStatsCard(
                         monitoringStats = viewModel.monitoringStats.collectAsState().value,
                         permissionStatus = permissionStatus
+                    )
+                }
+            }
+
+            if (safetyCoachPlan != null || recoveryPrompts.isNotEmpty()) {
+                item {
+                    RecoveryModeCard(
+                        plan = safetyCoachPlan,
+                        recoveryPrompts = recoveryPrompts,
+                        riskAssessments = riskAssessments,
+                        onPromptComplete = viewModel::completeRecoveryPrompt
                     )
                 }
             }
@@ -541,7 +584,7 @@ private fun SafetyPermissionStatusCard(
 
 @Composable
 private fun SafetyPermissionRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     isGranted: Boolean,
     isEssential: Boolean,
@@ -653,6 +696,9 @@ private fun SafetyCapabilityCard(
 /**
  * ✅ ENHANCED: Gesture triggers card with permission awareness
  */
+/**
+ * ✅ UPDATED: Enhanced gesture triggers with better permission handling
+ */
 @Composable
 private fun EnhancedGestureTriggersCard(
     volumeEnabled: Boolean,
@@ -713,46 +759,149 @@ private fun EnhancedGestureTriggersCard(
             )
 
             if (!canActivateGestures) {
+                Surface(
+                    color = Color.Yellow.copy(alpha = 0.1f),
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "⚠️ Gestures require basic safety permissions",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Yellow,
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        Text(
+                            text = "• Microphone for evidence recording\n• Location for emergency contacts\n• Camera for incident documentation",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 Button(
                     onClick = onRequestPermissions,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Yellow)
                 ) {
-                    Text("Grant Permissions to Enable Gestures")
+                    Text("Grant Permissions to Enable Gestures", color = Color.Black)
                 }
 
                 Divider()
             }
 
-            GestureTriggerItem(
+            // ✅ ENHANCED: Gesture items with smart enable/disable
+            SmartGestureTriggerItem(
                 icon = "🔊",
                 title = "Volume Buttons",
                 description = "Press volume up/down 3 times rapidly",
-                enabled = volumeEnabled && canActivateGestures,
+                enabled = volumeEnabled,
                 canEnable = canActivateGestures,
-                onToggle = onVolumeToggle
+                onToggle = onVolumeToggle,
+                onRequestPermissions = onRequestPermissions
             )
 
-            GestureTriggerItem(
+            SmartGestureTriggerItem(
                 icon = "📳",
                 title = "Phone Shake",
                 description = "Shake phone vigorously for 2 seconds",
-                enabled = shakeEnabled && canActivateGestures,
+                enabled = shakeEnabled,
                 canEnable = canActivateGestures,
-                onToggle = onShakeToggle
+                onToggle = onShakeToggle,
+                onRequestPermissions = onRequestPermissions
             )
 
-            GestureTriggerItem(
+            SmartGestureTriggerItem(
                 icon = "⚡",
                 title = "Power Button",
                 description = "Press power button 5 times quickly",
-                enabled = powerEnabled && canActivateGestures,
+                enabled = powerEnabled,
                 canEnable = canActivateGestures,
-                onToggle = onPowerToggle
+                onToggle = onPowerToggle,
+                onRequestPermissions = onRequestPermissions
             )
         }
     }
 }
+
+/**
+ * ✅ NEW: Smart gesture trigger item with permission handling
+ */
+@Composable
+private fun SmartGestureTriggerItem(
+    icon: String,
+    title: String,
+    description: String,
+    enabled: Boolean,
+    canEnable: Boolean,
+    onToggle: () -> Unit,
+    onRequestPermissions: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = icon,
+                style = MaterialTheme.typography.headlineSmall,
+                color = if (canEnable) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                }
+            )
+
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (canEnable) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    }
+                )
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (canEnable) 1f else 0.6f
+                    )
+                )
+            }
+        }
+
+        // ✅ ENHANCED: Smart switch for gestures
+        Switch(
+            checked = enabled && canEnable,
+            onCheckedChange = { isChecked ->
+                if (isChecked && !canEnable) {
+                    // Request permissions when trying to enable without them
+                    Log.d("GestureTrigger", "⚠️ Permissions needed for $title")
+                    onRequestPermissions()
+                } else if (canEnable) {
+                    // Normal toggle when permissions are available
+                    onToggle()
+                }
+                // If unchecking, always allow (even without permissions)
+                else if (!isChecked) {
+                    onToggle()
+                }
+            },
+            enabled = true // Always allow interaction, handle permissions in onClick
+        )
+    }
+}
+
 
 @Composable
 private fun GestureTriggerItem(
@@ -1109,10 +1258,782 @@ private fun VoiceDetectionToggleCard(
     }
 }
 
+/**
+ * ✅ UPDATED: Voice Detection Card for SafetyTriggerScreen.kt
+ *
+ * Key Changes:
+ * - "Always-On" → "Background Voice Detection"
+ * - Shows foreground service status
+ * - Updated battery impact estimates (2-5% vs <1%)
+ * - Service-based status indicators
+ * - Clear user understanding of foreground service
+ */
+@Composable
+private fun BackgroundVoiceDetectionCard(
+    voiceDetectionEnabled: Boolean,
+    voiceDetectionStatus: VoiceDetectionStatus,
+    isServiceRunning: Boolean,
+    currentKeyword: String?,
+    onToggleVoiceDetection: () -> Unit,
+    onConfigureKeyword: () -> Unit,
+    canEnableVoiceDetection: Boolean,
+    onRequestMicrophonePermission: () -> Unit // ✅ NEW: Specific callback for microphone permission
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                voiceDetectionStatus == VoiceDetectionStatus.ACTIVE && isServiceRunning ->
+                    Color.Green.copy(alpha = 0.1f)
+                voiceDetectionStatus == VoiceDetectionStatus.NO_PERMISSIONS ->
+                    Color.Yellow.copy(alpha = 0.1f)
+                voiceDetectionStatus == VoiceDetectionStatus.ERROR ->
+                    Color.Red.copy(alpha = 0.1f)
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Header with updated title
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "🗣️ Background Voice Detection",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                // Service status indicator
+                if (voiceDetectionStatus == VoiceDetectionStatus.ACTIVE && isServiceRunning) {
+                    Surface(
+                        color = Color.Green,
+                        shape = CircleShape,
+                        modifier = Modifier.size(8.dp)
+                    ) {}
+                }
+            }
+
+            // Updated description
+            Text(
+                text = getBackgroundVoiceDetectionDescription(voiceDetectionStatus, isServiceRunning, currentKeyword),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Service status row
+            BackgroundVoiceDetectionStatusRow(voiceDetectionStatus, isServiceRunning, currentKeyword)
+
+            // ✅ ENHANCED: Permission-aware toggle section
+            VoiceDetectionToggleSection(
+                voiceDetectionEnabled = voiceDetectionEnabled,
+                canEnableVoiceDetection = canEnableVoiceDetection,
+                onToggleVoiceDetection = onToggleVoiceDetection,
+                onRequestMicrophonePermission = onRequestMicrophonePermission
+            )
+
+            // Keyword configuration
+            if (voiceDetectionEnabled || currentKeyword != null) {
+                Divider()
+
+                KeywordConfigurationRow(
+                    currentKeyword = currentKeyword,
+                    onConfigureKeyword = onConfigureKeyword,
+                    isActive = voiceDetectionStatus == VoiceDetectionStatus.ACTIVE && isServiceRunning
+                )
+            }
+
+            // Service information (when active)
+            if (voiceDetectionEnabled) {
+                BackgroundVoiceDetectionServiceInfo(isServiceRunning)
+            }
+
+            // ✅ NEW: Permission warning when needed
+            if (!canEnableVoiceDetection) {
+                VoiceDetectionPermissionWarning(onRequestMicrophonePermission)
+            }
+        }
+    }
+}
+
+/**
+ * ✅ NEW: Dedicated toggle section with permission handling
+ */
+@Composable
+private fun VoiceDetectionToggleSection(
+    voiceDetectionEnabled: Boolean,
+    canEnableVoiceDetection: Boolean,
+    onToggleVoiceDetection: () -> Unit,
+    onRequestMicrophonePermission: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
+            Text(
+                text = "Enable Background Voice Detection",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = if (canEnableVoiceDetection) {
+                    if (voiceDetectionEnabled) "Service will run with persistent notification"
+                    else "Tap to start background listening service"
+                } else {
+                    "Microphone permission required"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (canEnableVoiceDetection) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    Color.Yellow
+                }
+            )
+        }
+
+        // ✅ ENHANCED: Smart toggle that handles permissions
+        VoiceDetectionSmartSwitch(
+            voiceDetectionEnabled = voiceDetectionEnabled,
+            canEnableVoiceDetection = canEnableVoiceDetection,
+            onToggleVoiceDetection = onToggleVoiceDetection,
+            onRequestMicrophonePermission = onRequestMicrophonePermission
+        )
+    }
+}
+
+/**
+ * ✅ NEW: Smart switch that handles permission checking
+ */
+@Composable
+private fun VoiceDetectionSmartSwitch(
+    voiceDetectionEnabled: Boolean,
+    canEnableVoiceDetection: Boolean,
+    onToggleVoiceDetection: () -> Unit,
+    onRequestMicrophonePermission: () -> Unit
+) {
+    Switch(
+        checked = voiceDetectionEnabled && canEnableVoiceDetection,
+        onCheckedChange = { isChecked ->
+            if (isChecked) {
+                // ✅ ENHANCED: Check permissions before enabling
+                if (canEnableVoiceDetection) {
+                    Log.d("VoiceDetection", "✅ Permissions granted, enabling voice detection")
+                    onToggleVoiceDetection()
+                } else {
+                    Log.d("VoiceDetection", "⚠️ Microphone permission needed, requesting...")
+                    onRequestMicrophonePermission()
+                }
+            } else {
+                // ✅ UNCHANGED: Always allow disabling
+                Log.d("VoiceDetection", "🔇 Disabling voice detection")
+                onToggleVoiceDetection()
+            }
+        },
+        // ✅ ENHANCED: Always enable the switch (let onClick handle permissions)
+        enabled = true
+    )
+}
+
+/**
+ * ✅ NEW: Permission warning section
+ */
+@Composable
+private fun VoiceDetectionPermissionWarning(
+    onRequestMicrophonePermission: () -> Unit
+) {
+    Surface(
+        color = Color.Yellow.copy(alpha = 0.1f),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = Color.Yellow,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "Microphone Permission Required",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Yellow
+                )
+            }
+
+            Text(
+                text = "Background voice detection needs microphone access to listen for your emergency trigger words.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Button(
+                onClick = onRequestMicrophonePermission,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Yellow,
+                    contentColor = Color.Black
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Mic,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Grant Microphone Permission")
+            }
+        }
+    }
+}
+
+/**
+ * ✅ UPDATED: Status row with service information
+ */
+@Composable
+private fun BackgroundVoiceDetectionStatusRow(
+    status: VoiceDetectionStatus,
+    isServiceRunning: Boolean,
+    currentKeyword: String?
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            imageVector = when {
+                status == VoiceDetectionStatus.ACTIVE && isServiceRunning -> Icons.Default.Mic
+                status == VoiceDetectionStatus.NO_PERMISSIONS -> Icons.Default.MicOff
+                status == VoiceDetectionStatus.ERROR -> Icons.Default.Error
+                else -> Icons.Default.MicOff
+            },
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = when {
+                status == VoiceDetectionStatus.ACTIVE && isServiceRunning -> Color.Green
+                status == VoiceDetectionStatus.NO_PERMISSIONS -> Color.Yellow
+                status == VoiceDetectionStatus.ERROR -> Color.Red
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+        )
+
+        Text(
+            text = getServiceStatusText(status, isServiceRunning),
+            style = MaterialTheme.typography.bodySmall,
+            color = when {
+                status == VoiceDetectionStatus.ACTIVE && isServiceRunning -> Color.Green
+                status == VoiceDetectionStatus.NO_PERMISSIONS -> Color.Yellow
+                status == VoiceDetectionStatus.ERROR -> Color.Red
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+
+/**
+ * ✅ UPDATED: Profile screen voice detection settings
+ *
+ * Key Changes:
+ * - Updated terminology throughout
+ * - Battery impact information revised
+ * - Service management options
+ * - Clear foreground service explanation
+ */
+@Composable
+private fun BackgroundVoiceDetectionSettingsCard(
+    voiceDetectionSettings: VoiceDetectionSettings,
+    voiceDetectionStatus: VoiceDetectionStatus,
+    isServiceRunning: Boolean,
+    currentKeyword: String?,
+    onToggleVoiceDetection: () -> Unit,
+    onUpdateSensitivity: (Float) -> Unit,
+    onToggleBatteryOptimization: () -> Unit,
+    onConfigureKeyword: () -> Unit,
+    onTestVoiceDetection: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Header
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Background Voice Detection",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                // Service status indicator
+                if (voiceDetectionStatus == VoiceDetectionStatus.ACTIVE && isServiceRunning) {
+                    Surface(
+                        color = Color.Green,
+                        shape = CircleShape,
+                        modifier = Modifier.size(8.dp)
+                    ) {}
+                }
+            }
+
+            // Service status overview
+            BackgroundServiceStatusOverview(
+                status = voiceDetectionStatus,
+                isServiceRunning = isServiceRunning,
+                currentKeyword = currentKeyword,
+                settings = voiceDetectionSettings
+            )
+
+            // Main toggle
+            SettingItem(
+                icon = Icons.Default.Mic,
+                title = "Background Voice Detection",
+                description = "Run foreground service to detect emergency triggers",
+                isChecked = voiceDetectionSettings.enabled,
+                onCheckedChange = { onToggleVoiceDetection() }
+            )
+
+            if (voiceDetectionSettings.enabled) {
+                Divider()
+
+                // Service information
+                ForegroundServiceExplanation()
+
+                Divider()
+
+                // Keyword management
+                VoiceKeywordSection(
+                    currentKeyword = currentKeyword,
+                    onConfigureKeyword = onConfigureKeyword,
+                    onTestVoiceDetection = onTestVoiceDetection
+                )
+
+                Divider()
+
+                // Sensitivity slider
+                VoiceSensitivitySection(
+                    sensitivity = voiceDetectionSettings.sensitivity,
+                    onUpdateSensitivity = onUpdateSensitivity
+                )
+
+                Divider()
+
+                // Battery optimization
+                SettingItem(
+                    icon = Icons.Default.Battery6Bar,
+                    title = "Battery Optimization",
+                    description = "Optimize service for battery life",
+                    isChecked = voiceDetectionSettings.batteryOptimized,
+                    onCheckedChange = { onToggleBatteryOptimization() }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * ✅ NEW: Service status overview for profile screen
+ */
+@Composable
+private fun BackgroundServiceStatusOverview(
+    status: VoiceDetectionStatus,
+    isServiceRunning: Boolean,
+    currentKeyword: String?,
+    settings: VoiceDetectionSettings
+) {
+    Surface(
+        color = when {
+            status == VoiceDetectionStatus.ACTIVE && isServiceRunning -> Color.Green.copy(alpha = 0.1f)
+            status == VoiceDetectionStatus.NO_PERMISSIONS -> Color.Yellow.copy(alpha = 0.1f)
+            status == VoiceDetectionStatus.ERROR -> Color.Red.copy(alpha = 0.1f)
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        },
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = when {
+                        status == VoiceDetectionStatus.ACTIVE && isServiceRunning -> "🟢 Service Active"
+                        status == VoiceDetectionStatus.DISABLED -> "⚪ Service Disabled"
+                        status == VoiceDetectionStatus.NO_PERMISSIONS -> "🟡 No Permissions"
+                        status == VoiceDetectionStatus.ERROR -> "🔴 Service Error"
+                        else -> "⚪ Service Inactive"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Text(
+                text = when {
+                    isServiceRunning -> "Foreground service running with persistent notification"
+                    settings.enabled -> "Service will start when permissions are granted"
+                    else -> "Background voice detection is disabled"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * ✅ NEW: Foreground service explanation
+ */
+@Composable
+private fun ForegroundServiceExplanation() {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "How Background Detection Works",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            ServiceInfoRow(
+                icon = "🔔",
+                title = "Persistent Notification",
+                description = "Service runs with visible notification for transparency"
+            )
+
+            ServiceInfoRow(
+                icon = "🔒",
+                title = "On-Device Processing",
+                description = "All voice processing happens locally on your device"
+            )
+
+            ServiceInfoRow(
+                icon = "🔋",
+                title = "Battery Usage",
+                description = "Estimated 2-5% per day with optimization enabled"
+            )
+
+            ServiceInfoRow(
+                icon = "📱",
+                title = "Background Operation",
+                description = "Works when app is backgrounded, stops if force-closed"
+            )
+        }
+    }
+}
+
+@Composable
+private fun ServiceInfoRow(
+    icon: String,
+    title: String,
+    description: String
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = icon,
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * ✅ UPDATED: Service status text
+ */
+private fun getServiceStatusText(status: VoiceDetectionStatus, isServiceRunning: Boolean): String {
+    return when {
+        status == VoiceDetectionStatus.ACTIVE && isServiceRunning -> "SERVICE RUNNING - Background listening"
+        status == VoiceDetectionStatus.ACTIVE && !isServiceRunning -> "Service starting..."
+        status == VoiceDetectionStatus.DISABLED -> "Service disabled"
+        status == VoiceDetectionStatus.NO_PERMISSIONS -> "No microphone access"
+        status == VoiceDetectionStatus.SERVICE_NOT_SET -> "Service not running"
+        status == VoiceDetectionStatus.UNAVAILABLE -> "Not available"
+        status == VoiceDetectionStatus.ERROR -> "Service error"
+        else -> "Checking service..."
+    }
+}
+
+@Composable
+private fun ServiceDetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+/**
+ * ✅ NEW: Service information section
+ */
+@Composable
+private fun BackgroundVoiceDetectionServiceInfo(isServiceRunning: Boolean) {
+    Surface(
+        color = if (isServiceRunning) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = if (isServiceRunning) "Service Active" else "Service Information",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            if (isServiceRunning) {
+                ServiceDetailRow("🔔 Notification", "Persistent service notification active")
+                ServiceDetailRow("🔒 Privacy", "All processing on your device")
+                ServiceDetailRow("🔋 Battery", "Estimated 2-5% per day")
+                ServiceDetailRow("📱 Detection", "Works when app is backgrounded")
+            } else {
+                Text(
+                    text = "Background service will run with a persistent notification for transparency.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * ✅ UPDATED: Description text for background voice detection
+ */
+private fun getBackgroundVoiceDetectionDescription(
+    status: VoiceDetectionStatus,
+    isServiceRunning: Boolean,
+    currentKeyword: String?
+): String {
+    return when {
+        status == VoiceDetectionStatus.ACTIVE && isServiceRunning ->
+            "Background service listening for \"$currentKeyword\" to instantly trigger emergency mode. Runs with a persistent notification for transparency."
+
+        status == VoiceDetectionStatus.DISABLED ->
+            "Background voice detection is disabled. When enabled, SafeguardMe will run a foreground service to listen for your trigger word."
+
+        status == VoiceDetectionStatus.NO_PERMISSIONS ->
+            "Microphone access required for voice detection. Grant permission to enable background emergency triggers."
+
+        status == VoiceDetectionStatus.SERVICE_NOT_SET ->
+            "Voice service not running. Tap enable to start background voice detection service."
+
+        status == VoiceDetectionStatus.UNAVAILABLE ->
+            "Voice detection not supported on this device. Use manual or gesture triggers instead."
+
+        status == VoiceDetectionStatus.ERROR ->
+            "Voice detection error. Check permissions and try again."
+
+        else ->
+            "Checking voice detection capabilities..."
+    }
+}
+
+
+/**
+ * ✅ HELPER: Keyword configuration row
+ */
+@Composable
+private fun KeywordConfigurationRow(
+    currentKeyword: String?,
+    onConfigureKeyword: () -> Unit,
+    isActive: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
+            Text(
+                text = "Trigger Keyword",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = if (currentKeyword != null) {
+                    "\"$currentKeyword\"${if (isActive) " (Active)" else " (Ready)"}"
+                } else {
+                    "No keyword set"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (currentKeyword != null) {
+                    if (isActive) Color.Green else MaterialTheme.colorScheme.primary
+                } else {
+                    Color.Red
+                }
+            )
+        }
+
+        OutlinedButton(
+            onClick = onConfigureKeyword,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = if (currentKeyword != null) "Change" else "Set Keyword",
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+    }
+}
+
+/**
+ * ✅ HELPER: Technical details section
+ */
+@Composable
+private fun VoiceDetectionTechnicalDetails() {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+        shape = MaterialTheme.shapes.small
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "Technical Details",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            TechnicalDetailRow("🔒 Processing", "100% on-device")
+            TechnicalDetailRow("🔋 Battery impact", "<1% per day")
+            TechnicalDetailRow("📡 Data transmission", "None until triggered")
+            TechnicalDetailRow("🎚️ Detection method", "Hardware DSP + Android system")
+        }
+    }
+}
+
+@Composable
+private fun TechnicalDetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+/**
+ * ✅ HELPER: Get voice detection description text
+ */
+private fun getVoiceDetectionDescription(
+    status: VoiceDetectionStatus,
+    currentKeyword: String?
+): String {
+    return when (status) {
+        VoiceDetectionStatus.ACTIVE ->
+            "Always listening for \"$currentKeyword\" to instantly trigger emergency mode. Uses hardware DSP for maximum battery efficiency."
+
+        VoiceDetectionStatus.DISABLED ->
+            "Voice detection is disabled. Enable to activate emergency mode by speaking your trigger word."
+
+        VoiceDetectionStatus.NO_PERMISSIONS ->
+            "Microphone access required for voice detection. Grant permission to enable always-on emergency triggers."
+
+        VoiceDetectionStatus.SERVICE_NOT_SET ->
+            "Voice service configuration required. Tap to set up always-on detection."
+
+        VoiceDetectionStatus.UNAVAILABLE ->
+            "Voice detection not supported on this device. Use manual or gesture triggers instead."
+
+        VoiceDetectionStatus.ERROR ->
+            "Voice detection error. Check permissions and try again."
+
+        VoiceDetectionStatus.UNKNOWN ->
+            "Checking voice detection capabilities..."
+    }
+}
+
+/**
+ * ✅ HELPER: Get status text
+ */
+private fun getStatusText(status: VoiceDetectionStatus): String {
+    return when (status) {
+        VoiceDetectionStatus.ACTIVE -> "ACTIVE - Always listening"
+        VoiceDetectionStatus.DISABLED -> "Disabled"
+        VoiceDetectionStatus.NO_PERMISSIONS -> "No microphone access"
+        VoiceDetectionStatus.SERVICE_NOT_SET -> "Setup required"
+        VoiceDetectionStatus.UNAVAILABLE -> "Not available"
+        VoiceDetectionStatus.ERROR -> "Error"
+        VoiceDetectionStatus.UNKNOWN -> "Checking..."
+    }
+}
+
+
+
+
 // ✅ UNCHANGED: Haptic feedback function
 private fun performHapticFeedback(context: Context, strong: Boolean = false) {
     try {
-        val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
             vibratorManager.defaultVibrator
         } else {
@@ -1120,7 +2041,7 @@ private fun performHapticFeedback(context: Context, strong: Boolean = false) {
             context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         }
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val effect = if (strong) {
                 VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE)
             } else {
@@ -1133,5 +2054,133 @@ private fun performHapticFeedback(context: Context, strong: Boolean = false) {
         }
     } catch (e: Exception) {
         // Haptic feedback not available, continue silently
+    }
+}
+
+@Composable
+private fun RecoveryModeCard(
+    plan: SafetyCoachPlan?,
+    recoveryPrompts: List<String>,
+    riskAssessments: List<RiskAssessment>,
+    onPromptComplete: (String) -> Unit
+) {
+    val latestRisk = riskAssessments.lastOrNull()
+    val riskLevel = plan?.riskLevel ?: latestRisk?.level ?: RiskLevel.UNKNOWN
+    val riskScore = plan?.riskScore ?: latestRisk?.score ?: 0
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Recovery Mode",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            plan?.let {
+                Text(
+                    text = it.summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (it.immediateActions.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Immediate next steps",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        it.immediateActions.forEach { action ->
+                            Text(
+                                text = "• $action",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Security,
+                    contentDescription = null,
+                    tint = when (riskLevel) {
+                        RiskLevel.CRITICAL -> Color(0xFFD32F2F)
+                        RiskLevel.HIGH -> Color(0xFFF57C00)
+                        RiskLevel.MODERATE -> Color(0xFFFFC107)
+                        RiskLevel.LOW -> Color(0xFF43A047)
+                        RiskLevel.UNKNOWN -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+                Text(
+                    text = "Risk level: ${riskLevel.name} (score $riskScore)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (recoveryPrompts.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Grounding prompts",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    recoveryPrompts.forEach { prompt ->
+                        RecoveryPromptRow(
+                            prompt = prompt,
+                            onComplete = { onPromptComplete(prompt) }
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = "All recovery prompts completed. Take your time to rest.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecoveryPromptRow(
+    prompt: String,
+    onComplete: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = prompt,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        TextButton(onClick = onComplete) {
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text("Done")
+        }
     }
 }

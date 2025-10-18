@@ -2,6 +2,7 @@
 package com.safeguardme.app.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -69,6 +70,7 @@ import com.safeguardme.app.data.models.SeverityLevel
 import com.safeguardme.app.ui.viewmodels.IncidentFilter
 import com.safeguardme.app.ui.viewmodels.IncidentHistoryViewModel
 import com.safeguardme.app.utils.DateUtils
+import java.util.Date
 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) // Opt-in is present
@@ -85,8 +87,18 @@ fun IncidentHistoryScreen(
     val filterCounts by viewModel.filterCounts.collectAsState()
     val totalIncidents by viewModel.totalIncidents.collectAsState()
     val criticalIncidents by viewModel.criticalIncidents.collectAsState()
+    val timelineEntries by viewModel.timelineEntries.collectAsState()
+    val selectedTimelineIncident by viewModel.selectedTimelineIncident.collectAsState()
+    val isTimelineLoading by viewModel.isTimelineLoading.collectAsState()
 
     var showDeleteDialog by remember { mutableStateOf<Incident?>(null) }
+    var expandedIncident by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(selectedTimelineIncident) {
+        if (selectedTimelineIncident == null) {
+            expandedIncident = null
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -215,12 +227,29 @@ fun IncidentHistoryScreen(
                     items = filteredIncidents,
                     key = { it.incidentId }
                 ) { incident ->
+                    val isExpanded = expandedIncident == incident.incidentId
+                    val timelineForIncident = if (isExpanded && selectedTimelineIncident == incident.incidentId) {
+                        timelineEntries
+                    } else emptyList()
+
                     IncidentCard(
                         incident = incident,
                         onClick = {
                             // TODO: Navigate to incident detail screen
                         },
                         onDelete = { showDeleteDialog = incident },
+                        onToggleTimeline = {
+                            if (isExpanded) {
+                                expandedIncident = null
+                                viewModel.clearTimeline()
+                            } else {
+                                expandedIncident = incident.incidentId
+                                viewModel.loadTimelineForIncident(incident.incidentId)
+                            }
+                        },
+                        isTimelineExpanded = isExpanded,
+                        isTimelineLoading = isTimelineLoading && selectedTimelineIncident == incident.incidentId,
+                        timelineEntries = timelineForIncident,
                         modifier = Modifier.animateItem()
                     )
                 }
@@ -469,6 +498,10 @@ private fun IncidentCard(
     incident: Incident,
     onClick: () -> Unit,
     onDelete: () -> Unit,
+    onToggleTimeline: () -> Unit,
+    isTimelineExpanded: Boolean,
+    isTimelineLoading: Boolean,
+    timelineEntries: List<com.safeguardme.app.data.models.IncidentTimelineEntry>,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -590,8 +623,92 @@ private fun IncidentCard(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            TextButton(onClick = onToggleTimeline) {
+                Icon(
+                    imageVector = Icons.Default.Analytics,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(if (isTimelineExpanded) "Hide timeline" else "Replay timeline")
+            }
+
+            if (isTimelineExpanded) {
+                if (isTimelineLoading) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Loading timeline...")
+                    }
+                } else if (timelineEntries.isEmpty()) {
+                    Text(
+                        text = "No timeline data available yet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    IncidentTimeline(entries = timelineEntries)
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun IncidentTimeline(entries: List<com.safeguardme.app.data.models.IncidentTimelineEntry>) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        entries.forEach { entry ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = DateUtils.formatDisplayTime(Date(entry.timestamp)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    TimelineMarker()
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = entry.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = entry.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineMarker() {
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .background(MaterialTheme.colorScheme.primary, shape = MaterialTheme.shapes.small)
+    )
 }
 
 @Composable

@@ -1,6 +1,6 @@
 <voice-interaction-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:sessionService=".services.SafetyVoiceInteractionSessionService"
-    android:recognitionService=".services.SafetyRecognitionService"
+    android:sessionService="com.safeguardme.app.services.SafetyVoiceInteractionSessionService"
+    android:recognitionService="com.safeguardme.app.services.SafetyRecognitionService"
     android:supportsAssist="false"
     android:supportsLaunchVoiceAssistFromKeyguard="false" />

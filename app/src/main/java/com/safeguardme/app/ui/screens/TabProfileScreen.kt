@@ -712,51 +712,6 @@ private fun AccountActionsCard(
     }
 }
 
-@Composable
-private fun SettingItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    description: String,
-    isChecked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
-
-            Column {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Switch(
-            checked = isChecked,
-            onCheckedChange = onCheckedChange
-        )
-    }
-}
 
 /**
  * ✅ NEW: Voice detection settings card

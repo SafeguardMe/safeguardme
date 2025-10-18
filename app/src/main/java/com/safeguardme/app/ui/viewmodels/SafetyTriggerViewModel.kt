@@ -2,15 +2,24 @@
 package com.safeguardme.app.ui.viewmodels
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.safeguardme.app.data.models.RiskAssessment
+import com.safeguardme.app.data.models.RiskLevel
+import com.safeguardme.app.data.models.SafetyCoachPlan
+import com.safeguardme.app.data.models.SafetySession
 import com.safeguardme.app.data.models.SafetyStatus
 import com.safeguardme.app.data.models.User
 import com.safeguardme.app.data.repositories.SafetyEvidenceRepository
 import com.safeguardme.app.data.repositories.UserRepository
 import com.safeguardme.app.managers.AppPermission
 import com.safeguardme.app.managers.EmergencyContactNotificationManager
+import com.safeguardme.app.managers.EmergencyGestureManager
 import com.safeguardme.app.managers.PermissionManager
+import com.safeguardme.app.managers.SafetyCoachManager
+import com.safeguardme.app.managers.VoiceDetectionManager
+import com.safeguardme.app.managers.VoiceDetectionStatus
 import com.safeguardme.app.services.SafetyMonitoringService
 import com.safeguardme.app.utils.FirebaseUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -20,6 +29,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -32,8 +42,24 @@ class SafetyTriggerViewModel @Inject constructor(
     private val userRepository: UserRepository,
     private val safetyEvidenceRepository: SafetyEvidenceRepository,
     private val emergencyContactNotificationManager: EmergencyContactNotificationManager,
-    private val permissionManager: PermissionManager // ✅ NEW: Inject PermissionManager
+    private val permissionManager: PermissionManager,
+    private val safetyCoachManager: SafetyCoachManager
 ) : ViewModel() {
+
+    private var TAG = "SafetyTriggerVM"
+
+    @Inject
+    lateinit var voiceDetectionManager: VoiceDetectionManager
+
+    // Voice detection state
+    private val _voiceDetectionEnabled = MutableStateFlow(false)
+    val voiceDetectionEnabled = _voiceDetectionEnabled.asStateFlow()
+
+    private val _voiceDetectionStatus = MutableStateFlow(VoiceDetectionStatus.UNKNOWN)
+    val voiceDetectionStatus = _voiceDetectionStatus.asStateFlow()
+
+    private val _currentVoiceKeyword = MutableStateFlow<String?>(null)
+    val currentVoiceKeyword = _currentVoiceKeyword.asStateFlow()
 
     // ✅ NEW: Permission state tracking
     private val _permissionStatus = MutableStateFlow(SafetyPermissionStatus())
@@ -65,8 +91,7 @@ class SafetyTriggerViewModel @Inject constructor(
     private val _safetyStatus = MutableStateFlow(SafetyStatus.DISABLED)
     val safetyStatus: StateFlow<SafetyStatus> = _safetyStatus.asStateFlow()
 
-    private val _voiceDetectionEnabled = MutableStateFlow(false)
-    val voiceDetectionEnabled = _voiceDetectionEnabled.asStateFlow()
+
 
     private val _triggerKeyword = MutableStateFlow<String?>(null)
     val triggerKeyword = _triggerKeyword.asStateFlow()
@@ -81,6 +106,15 @@ class SafetyTriggerViewModel @Inject constructor(
     private val _monitoringStats = MutableStateFlow(MonitoringStats())
     val monitoringStats: StateFlow<MonitoringStats> = _monitoringStats.asStateFlow()
 
+    private val _safetyCoachPlan = MutableStateFlow<SafetyCoachPlan?>(null)
+    val safetyCoachPlan: StateFlow<SafetyCoachPlan?> = _safetyCoachPlan.asStateFlow()
+
+    private val _recoveryPrompts = MutableStateFlow<List<String>>(emptyList())
+    val recoveryPrompts: StateFlow<List<String>> = _recoveryPrompts.asStateFlow()
+
+    private val _riskAssessments = MutableStateFlow<List<RiskAssessment>>(emptyList())
+    val riskAssessments: StateFlow<List<RiskAssessment>> = _riskAssessments.asStateFlow()
+
     val canActivateSafety: StateFlow<Boolean> = _permissionStatus.map { status ->
         status.hasCriticalPermissions()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -88,6 +122,21 @@ class SafetyTriggerViewModel @Inject constructor(
     val canCollectFullEvidence: StateFlow<Boolean> = _permissionStatus.map { status ->
         status.hasAllOptimalPermissions()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    private val _isKeywordVerified = MutableStateFlow(false)
+    val isKeywordVerified = _isKeywordVerified.asStateFlow()
+
+    private val _lastTestResult = MutableStateFlow<String?>(null)
+    val lastTestResult = _lastTestResult.asStateFlow()
+
+    private val _isTestingVoiceDetection = MutableStateFlow(false)
+    val isTestingVoiceDetection = _isTestingVoiceDetection.asStateFlow()
+
+    private val _recentFalsePositives = MutableStateFlow(0)
+    val recentFalsePositives = _recentFalsePositives.asStateFlow()
+
+    private val _recentMissedDetections = MutableStateFlow(0)
+    val recentMissedDetections = _recentMissedDetections.asStateFlow()
 
     // ✅ ENHANCED: Permission-aware status messages
     val statusMessage: StateFlow<String> = combine(
@@ -166,11 +215,67 @@ class SafetyTriggerViewModel @Inject constructor(
     private val _powerButtonTriggerEnabled = MutableStateFlow(false)
     val powerButtonTriggerEnabled: StateFlow<Boolean> = _powerButtonTriggerEnabled.asStateFlow()
 
+    private val _isServiceRunning = MutableStateFlow(false)
+    val isServiceRunning = _isServiceRunning.asStateFlow()
+
+    private val gesturePreferences =
+        context.getSharedPreferences(EmergencyGestureManager.PREFS_NAME, Context.MODE_PRIVATE)
+
     init {
+        initializeGestureSettings()
         initializePermissionMonitoring()
         loadUserData()
         observeMonitoringStats()
         checkAllPermissions()
+    }
+
+    private fun initializeGestureSettings() {
+        val editor = gesturePreferences.edit()
+
+        if (!gesturePreferences.contains(EmergencyGestureManager.KEY_GESTURES_ENABLED)) {
+            editor.putBoolean(EmergencyGestureManager.KEY_GESTURES_ENABLED, true)
+        }
+        if (!gesturePreferences.contains(EmergencyGestureManager.KEY_VOLUME_ENABLED)) {
+            editor.putBoolean(EmergencyGestureManager.KEY_VOLUME_ENABLED, true)
+        }
+        if (!gesturePreferences.contains(EmergencyGestureManager.KEY_SHAKE_ENABLED)) {
+            editor.putBoolean(EmergencyGestureManager.KEY_SHAKE_ENABLED, true)
+        }
+        if (!gesturePreferences.contains(EmergencyGestureManager.KEY_POWER_ENABLED)) {
+            editor.putBoolean(EmergencyGestureManager.KEY_POWER_ENABLED, false)
+        }
+
+        editor.apply()
+
+        _gestureTriggersEnabled.value =
+            gesturePreferences.getBoolean(EmergencyGestureManager.KEY_GESTURES_ENABLED, true)
+        _volumeButtonTriggerEnabled.value =
+            gesturePreferences.getBoolean(EmergencyGestureManager.KEY_VOLUME_ENABLED, true)
+        _shakeTriggerEnabled.value =
+            gesturePreferences.getBoolean(EmergencyGestureManager.KEY_SHAKE_ENABLED, true)
+        _powerButtonTriggerEnabled.value =
+            gesturePreferences.getBoolean(EmergencyGestureManager.KEY_POWER_ENABLED, false)
+    }
+
+    private fun persistGesturePreference(key: String, value: Boolean) {
+        gesturePreferences.edit().putBoolean(key, value).apply()
+    }
+
+    private fun syncGestureSettingsFromUser(user: User) {
+        val settings = user.emergencySettings
+        val editor = gesturePreferences.edit()
+        editor.putBoolean(EmergencyGestureManager.KEY_VOLUME_ENABLED, settings.volumeGestureEnabled)
+        editor.putBoolean(EmergencyGestureManager.KEY_SHAKE_ENABLED, settings.shakeGestureEnabled)
+        editor.putBoolean(EmergencyGestureManager.KEY_POWER_ENABLED, settings.powerGestureEnabled)
+        editor.apply()
+
+        _volumeButtonTriggerEnabled.value = settings.volumeGestureEnabled
+        _shakeTriggerEnabled.value = settings.shakeGestureEnabled
+        _powerButtonTriggerEnabled.value = settings.powerGestureEnabled
+
+        val anyEnabled = settings.volumeGestureEnabled || settings.shakeGestureEnabled || settings.powerGestureEnabled
+        _gestureTriggersEnabled.value = anyEnabled
+        gesturePreferences.edit().putBoolean(EmergencyGestureManager.KEY_GESTURES_ENABLED, anyEnabled).apply()
     }
 
     /**
@@ -202,6 +307,122 @@ class SafetyTriggerViewModel @Inject constructor(
         }
     }
 
+    // Monitor service state
+    private fun initializeServiceMonitoring() {
+        viewModelScope.launch {
+            combine(
+                voiceDetectionManager.isVoiceDetectionEnabled,
+                voiceDetectionManager.voiceDetectionStatus,
+                voiceDetectionManager.isServiceRunning,
+                voiceDetectionManager.currentTriggerKeyword
+            ) { enabled, status, serviceRunning, keyword ->
+                _voiceDetectionEnabled.value = enabled
+                _voiceDetectionStatus.value = status
+                _isServiceRunning.value = serviceRunning
+                _currentVoiceKeyword.value = keyword
+            }.collect()
+        }
+    }
+
+    private fun initializeVoiceDetectionMonitoring() {
+        viewModelScope.launch {
+            combine(
+                voiceDetectionManager.isVoiceDetectionEnabled,
+                voiceDetectionManager.voiceDetectionStatus,
+                voiceDetectionManager.currentTriggerKeyword
+            ) { enabled, status, keyword ->
+                _voiceDetectionEnabled.value = enabled
+                _voiceDetectionStatus.value = status
+                _currentVoiceKeyword.value = keyword
+            }.collect()
+        }
+    }
+
+    fun updateDetectionSensitivity(sensitivity: Float) { /* Update sensitivity */ }
+
+
+
+
+    fun requestEssentialPermissions() {
+        // Request multiple essential permissions for gesture triggers
+        val missingPermissions = listOf(
+            AppPermission.AUDIO_RECORDING,
+            AppPermission.LOCATION,
+            AppPermission.CAMERA
+        ).filter { !permissionManager.isPermissionGranted(it) }
+
+        if (missingPermissions.isNotEmpty()) {
+            // Request the first missing permission
+            showPermissionDialog(missingPermissions.first())
+        }
+    }
+
+    /**
+     * ✅ VOICE: Toggle voice detection
+     */
+    fun toggleVoiceDetection() {
+        viewModelScope.launch {
+            try {
+                if (!_voiceDetectionEnabled.value) {
+                    // ✅ ENHANCED: Check permissions before enabling
+                    if (!permissionManager.isPermissionGranted(AppPermission.AUDIO_RECORDING)) {
+                        Log.w(TAG, "⚠️ Cannot enable voice detection - microphone permission not granted")
+                        showPermissionDialog(AppPermission.AUDIO_RECORDING)
+                        return@launch
+                    }
+
+                    // ✅ ENHANCED: Check if keyword is set
+                    /*if (_currentVoiceKeyword.value.isNullOrBlank()) {
+                        Log.w(TAG, "⚠️ Cannot enable voice detection - no keyword set")
+                        _error.value = "Please set a trigger keyword first"
+                        configureVoiceKeyword()
+                        return@launch
+                    }*/
+
+                    Log.d(TAG, "🔊 Enabling voice detection with all requirements met")
+                    voiceDetectionManager.enableVoiceDetection()
+                } else {
+                    Log.d(TAG, "🔇 Disabling voice detection")
+                    voiceDetectionManager.disableVoiceDetection()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error toggling voice detection", e)
+                _error.value = "Voice detection error: ${e.message}"
+            }
+        }
+    }
+
+
+    /**
+     * ✅ VOICE: Configure keyword (navigate to TriggerScreen)
+     */
+    fun configureVoiceKeyword() {
+        // This would navigate to the TriggerScreen where users can record their keyword
+        // For now, we'll just log the intent
+
+
+        android.util.Log.d("SafetyTriggerVM", "🗣️ Navigating to keyword configuration")
+    }
+
+    /**
+     * ✅ VOICE: Test voice detection
+     */
+    fun testVoiceDetection() {
+        viewModelScope.launch {
+            try {
+                val result = voiceDetectionManager.testVoiceDetection()
+                if (result.isSuccess) {
+                    android.util.Log.i("SafetyTriggerVM", "🧪 Voice detection test: ${result.getOrNull()}")
+                } else {
+                    _error.value = "Voice detection test failed: ${result.exceptionOrNull()?.message}"
+                }
+            } catch (e: Exception) {
+                _error.value = "Voice detection test error: ${e.message}"
+            }
+        }
+    }
+
+
     /**
      * ✅ NEW: Check all required permissions
      */
@@ -212,26 +433,35 @@ class SafetyTriggerViewModel @Inject constructor(
                 val locationGranted = permissionManager.isPermissionGranted(AppPermission.LOCATION)
                 val cameraGranted = permissionManager.isPermissionGranted(AppPermission.CAMERA)
                 val storageGranted = permissionManager.isPermissionGranted(AppPermission.STORAGE)
+                val smsGranted = permissionManager.isPermissionGranted(AppPermission.SMS_MESSAGING)
+
+                if (smsGranted) {
+                    Log.d(TAG, "   ✅ SMS emergency notifications enabled")
+                } else {
+                    Log.w(TAG, "   ⚠️ SMS emergency notifications disabled - grant permission to enable")
+                }
 
                 val status = SafetyPermissionStatus(
                     canRecordAudio = audioGranted,
                     canAccessLocation = locationGranted,
                     canTakePhotos = cameraGranted,
                     canSaveEvidence = storageGranted,
+                    canSendSMS = smsGranted,
                     lastChecked = System.currentTimeMillis()
                 )
 
                 _permissionStatus.value = status
                 updatePermissionWarnings(status)
 
-                android.util.Log.d("SafetyTriggerVM", "🔍 Permission check complete:")
-                android.util.Log.d("SafetyTriggerVM", "   🎤 Audio: $audioGranted")
-                android.util.Log.d("SafetyTriggerVM", "   📍 Location: $locationGranted")
-                android.util.Log.d("SafetyTriggerVM", "   📷 Camera: $cameraGranted")
-                android.util.Log.d("SafetyTriggerVM", "   💾 Storage: $storageGranted")
+                android.util.Log.d(TAG, "🔍 Permission check complete:")
+                android.util.Log.d(TAG, "   🎤 Audio: $audioGranted")
+                android.util.Log.d(TAG, "   📍 Location: $locationGranted")
+                android.util.Log.d(TAG, "   📷 Camera: $cameraGranted")
+                android.util.Log.d(TAG, "   💾 Storage: $storageGranted")
+                Log.d(TAG, "   📱 SMS: $smsGranted")
 
             } catch (e: Exception) {
-                android.util.Log.e("SafetyTriggerVM", "❌ Error checking permissions", e)
+                android.util.Log.e(TAG, "❌ Error checking permissions", e)
                 _error.value = "Error checking permissions: ${e.message}"
             }
         }
@@ -255,6 +485,9 @@ class SafetyTriggerViewModel @Inject constructor(
         if (!status.canSaveEvidence) {
             warnings.add("Evidence storage limited - grant storage access")
         }
+        if(!status.canSendSMS) {
+            warnings.add("SMS messaging disabled - grant SMS access")
+        }
 
         _permissionWarnings.value = warnings
     }
@@ -277,6 +510,7 @@ class SafetyTriggerViewModel @Inject constructor(
                             AppPermission.LOCATION -> android.util.Log.d("SafetyTriggerVM", "✅ Location tracking enabled")
                             AppPermission.CAMERA -> android.util.Log.d("SafetyTriggerVM", "✅ Photo evidence enabled")
                             AppPermission.STORAGE -> android.util.Log.d("SafetyTriggerVM", "✅ Evidence storage enabled")
+                            AppPermission.SMS_MESSAGING -> android.util.Log.d("SafetyTriggerVM", "✅ SMS messaging enabled")
                             else -> {}
                         }
                     } else {
@@ -285,6 +519,7 @@ class SafetyTriggerViewModel @Inject constructor(
                             AppPermission.LOCATION -> "Location tracking requires location access. Emergency contacts won't receive your location."
                             AppPermission.CAMERA -> "Photo evidence requires camera access. Visual documentation will be unavailable."
                             AppPermission.STORAGE -> "Evidence storage requires storage access. Evidence may not be saved permanently."
+                            AppPermission.SMS_MESSAGING -> "SMS messaging requires SMS access. Emergency contacts won't receive notifications."
                             else -> "Permission denied. Some safety features may not work properly."
                         }
                     }
@@ -324,6 +559,7 @@ class SafetyTriggerViewModel @Inject constructor(
                         user?.let {
                             _safetyStatus.value = it.safetyStatus
                             _isMonitoringActive.value = it.safetyStatus != SafetyStatus.DISABLED
+                            syncGestureSettingsFromUser(it)
                         }
                     }
             } catch (e: Exception) {
@@ -427,6 +663,9 @@ class SafetyTriggerViewModel @Inject constructor(
             val sessionId = generateSessionId()
             _currentSessionId.value = sessionId
             _isMonitoringActive.value = true
+            _safetyCoachPlan.value = null
+            _recoveryPrompts.value = emptyList()
+            _riskAssessments.value = emptyList()
 
             // Start the safety monitoring service with permission context
             SafetyMonitoringService.startMonitoring(
@@ -549,6 +788,7 @@ class SafetyTriggerViewModel @Inject constructor(
             safetyEvidenceRepository.createSessionSummary(sessionId)
                 .onSuccess { session ->
                     android.util.Log.i("SafetyTriggerVM", "✅ Created session summary: ${session.evidenceCount} evidence items")
+                    applySafetyCoachPlan(session)
                 }
                 .onFailure { error ->
                     android.util.Log.e("SafetyTriggerVM", "❌ Failed to create session summary", error)
@@ -556,6 +796,50 @@ class SafetyTriggerViewModel @Inject constructor(
         } catch (e: Exception) {
             android.util.Log.e("SafetyTriggerVM", "❌ Error creating session summary", e)
         }
+    }
+
+    private suspend fun applySafetyCoachPlan(session: SafetySession) {
+        safetyCoachManager.generateAftercarePlan(session)
+            .onSuccess { outcome ->
+                _safetyCoachPlan.value = outcome.plan
+                _recoveryPrompts.value = outcome.plan.recoveryPrompts
+                _riskAssessments.value = outcome.riskAssessments
+
+                val updatedSession = session.copy(
+                    coachSummary = outcome.plan.summary,
+                    coachActions = outcome.plan.immediateActions,
+                    checkInMessages = outcome.plan.followUpMessages,
+                    nextCheckInAt = outcome.plan.nextCheckInAt,
+                    recoveryPrompts = outcome.plan.recoveryPrompts,
+                    riskLevel = outcome.plan.riskLevel,
+                    riskScore = outcome.plan.riskScore,
+                    riskFactors = outcome.plan.riskFactors
+                )
+
+                safetyEvidenceRepository.updateSessionSummary(updatedSession)
+
+                outcome.riskAssessments.forEach { assessment ->
+                    safetyEvidenceRepository.saveEvidence(
+                        com.safeguardme.app.data.models.SafetyEvidence.createRiskAssessmentEvidence(
+                            updatedSession.id,
+                            assessment
+                        )
+                    )
+                }
+
+                _monitoringStats.value = _monitoringStats.value.copy(
+                    riskLevel = outcome.plan.riskLevel,
+                    riskScore = outcome.plan.riskScore,
+                    lastUpdate = System.currentTimeMillis()
+                )
+            }
+            .onFailure { error ->
+                android.util.Log.e("SafetyTriggerVM", "❌ Safety coach plan failed", error)
+            }
+    }
+
+    fun completeRecoveryPrompt(prompt: String) {
+        _recoveryPrompts.value = _recoveryPrompts.value.filterNot { it == prompt }
     }
 
     // ✅ ENHANCED: Permission-aware gesture triggers
@@ -639,19 +923,64 @@ class SafetyTriggerViewModel @Inject constructor(
 
     // Gesture trigger toggles
     fun toggleVolumeButtonTrigger() {
-        _volumeButtonTriggerEnabled.value = !_volumeButtonTriggerEnabled.value
+        val newValue = !_volumeButtonTriggerEnabled.value
+        _volumeButtonTriggerEnabled.value = newValue
+        persistGesturePreference(EmergencyGestureManager.KEY_VOLUME_ENABLED, newValue)
+        viewModelScope.launch {
+            userRepository.updateGestureSettings(
+                volumeEnabled = newValue,
+                shakeEnabled = _shakeTriggerEnabled.value,
+                powerEnabled = _powerButtonTriggerEnabled.value
+            )
+        }
     }
 
     fun toggleShakeTrigger() {
-        _shakeTriggerEnabled.value = !_shakeTriggerEnabled.value
+        val newValue = !_shakeTriggerEnabled.value
+        _shakeTriggerEnabled.value = newValue
+        persistGesturePreference(EmergencyGestureManager.KEY_SHAKE_ENABLED, newValue)
+        viewModelScope.launch {
+            userRepository.updateGestureSettings(
+                volumeEnabled = _volumeButtonTriggerEnabled.value,
+                shakeEnabled = newValue,
+                powerEnabled = _powerButtonTriggerEnabled.value
+            )
+        }
     }
 
     fun togglePowerButtonTrigger() {
-        _powerButtonTriggerEnabled.value = !_powerButtonTriggerEnabled.value
+        val newValue = !_powerButtonTriggerEnabled.value
+        _powerButtonTriggerEnabled.value = newValue
+        persistGesturePreference(EmergencyGestureManager.KEY_POWER_ENABLED, newValue)
+        viewModelScope.launch {
+            userRepository.updateGestureSettings(
+                volumeEnabled = _volumeButtonTriggerEnabled.value,
+                shakeEnabled = _shakeTriggerEnabled.value,
+                powerEnabled = newValue
+            )
+        }
     }
 
     fun toggleGestureTriggers() {
-        _gestureTriggersEnabled.value = !_gestureTriggersEnabled.value
+        val newValue = !_gestureTriggersEnabled.value
+        _gestureTriggersEnabled.value = newValue
+        persistGesturePreference(EmergencyGestureManager.KEY_GESTURES_ENABLED, newValue)
+        if (!newValue) {
+            _volumeButtonTriggerEnabled.value = false
+            _shakeTriggerEnabled.value = false
+            _powerButtonTriggerEnabled.value = false
+            persistGesturePreference(EmergencyGestureManager.KEY_VOLUME_ENABLED, false)
+            persistGesturePreference(EmergencyGestureManager.KEY_SHAKE_ENABLED, false)
+            persistGesturePreference(EmergencyGestureManager.KEY_POWER_ENABLED, false)
+        }
+
+        viewModelScope.launch {
+            userRepository.updateGestureSettings(
+                volumeEnabled = if (newValue) _volumeButtonTriggerEnabled.value else false,
+                shakeEnabled = if (newValue) _shakeTriggerEnabled.value else false,
+                powerEnabled = if (newValue) _powerButtonTriggerEnabled.value else false
+            )
+        }
     }
 
     // Confirmation dialog methods
@@ -686,6 +1015,7 @@ class SafetyTriggerViewModel @Inject constructor(
             📷 Photos: ${stats.photoCount}
             🎤 Audio: ${stats.audioSegments} segments
             📝 Transcriptions: ${stats.transcriptionCount}
+            Risk Level: ${stats.riskLevel} (score ${stats.riskScore})
             
             Capabilities: ${permissions.getActiveCapabilities().joinToString(", ")}
             ${if (permissions.getMissingFeatures().isNotEmpty()) "⚠️ Missing: ${permissions.getMissingFeatures().joinToString(", ")}" else ""}
@@ -826,7 +1156,9 @@ data class MonitoringStats(
     val triggerMethod: String? = null,
     val lastUpdate: Long = 0L,
     val availableCapabilities: List<String> = emptyList(), // ✅ NEW
-    val missingCapabilities: List<String> = emptyList()    // ✅ NEW
+    val missingCapabilities: List<String> = emptyList(),   // ✅ NEW
+    val riskLevel: RiskLevel = RiskLevel.UNKNOWN,
+    val riskScore: Int = 0
 ) {
     fun getDurationMinutes(): Long {
         return if (startTime > 0) {

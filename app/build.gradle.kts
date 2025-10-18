@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -6,6 +8,7 @@ plugins {
     alias(libs.plugins.kotlin.kapt)
     alias(libs.plugins.google.services)
     alias(libs.plugins.kotlin.parcelize)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -26,6 +29,35 @@ android {
 
         // ProGuard configuration for release builds
         proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+
+        // OpenAI configuration (values pulled from gradle.properties/local.properties at build time)
+        val localProps = Properties().apply {
+            val file = rootProject.file("local.properties")
+            if (file.exists()) {
+                file.inputStream().use { load(it) }
+            }
+        }
+
+        fun sanitize(value: String): String {
+            return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+        }
+
+        val openAiKey = (project.findProperty("OPENAI_API_KEY") as? String)
+            ?: localProps.getProperty("OPENAI_API_KEY")
+            ?: ""
+        buildConfigField("String", "OPENAI_API_KEY", "\"${sanitize(openAiKey)}\"")
+
+        val openAiModel = (project.findProperty("OPENAI_MODEL") as? String)
+            ?: localProps.getProperty("OPENAI_MODEL")
+            ?: "gpt-4o-mini"
+        buildConfigField("String", "OPENAI_MODEL", "\"${sanitize(openAiModel)}\"")
+
+        val openAiBaseUrl = (project.findProperty("OPENAI_BASE_URL") as? String)
+            ?: localProps.getProperty("OPENAI_BASE_URL")
+            ?: "https://api.openai.com/v1"
+        buildConfigField("String", "OPENAI_BASE_URL", "\"${sanitize(openAiBaseUrl)}\"")
     }
 
     signingConfigs {
@@ -131,9 +163,15 @@ dependencies {
     implementation(libs.navigation.compose)
 
     // Hilt for Dependency Injection
-    implementation(libs.hilt.android)
+    implementation(libs.hilt.android){
+        exclude(group = "com.intellij", module = "annotations")
+    }
     implementation(libs.hilt.navigation.compose)
-    kapt(libs.hilt.compiler)
+    implementation(libs.androidx.room.compiler)
+    kapt(libs.hilt.compiler){
+        exclude(group = "com.intellij", module = "annotations")
+    }
+    // Apply to other dependencies
 
     // Firebase BOM and services
     implementation(platform(libs.firebase.bom))
@@ -179,6 +217,8 @@ dependencies {
     implementation(libs.google.play.services.location) // Or libs.google.playservices.location if your alias was google-playservices-location
 
     implementation(libs.google.gson) // This uses the alias from libs.versions.toml
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.logging.interceptor)
 
     // Testing
     testImplementation(libs.junit)
@@ -208,6 +248,12 @@ kapt {
 // Additional configurations for security and performance
 configurations.all {
     resolutionStrategy {
+        // Force single annotations library
+        force("org.jetbrains:annotations:23.0.0")
+
+        // Exclude conflicting annotations
+        exclude(group = "com.intellij", module = "annotations")
+
         // Force consistent versions for security
         force("org.jetbrains.kotlin:kotlin-stdlib:${libs.versions.kotlin.get()}")
         force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:${libs.versions.kotlin.get()}")

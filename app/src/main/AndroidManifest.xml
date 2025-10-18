@@ -15,10 +15,17 @@
     <!-- Audio permissions for recording and transcription -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <uses-permission android:name="android.permission.CAPTURE_AUDIO_HOTWORD"
-        tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.BIND_VOICE_INTERACTION"
-        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+
+    <!-- ✅ FOREGROUND SERVICE: Required for Android 9+ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- ✅ ANDROID 14+: Specific foreground service type for microphone -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+
 
     <!-- Phone permissions for emergency calls -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
@@ -114,32 +121,51 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ SAFETY MONITORING SERVICE -->
+        <!-- ================================================================ -->
+        <!-- VOICE DETECTION SERVICE: Handles ALL audio functionality -->
+        <!-- ================================================================ -->
+
+        <service
+            android:name=".services.VoiceDetectionForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:stopWithTask="false" >
+
+            <intent-filter>
+                <action android:name="com.safeguardme.START_VOICE_DETECTION" />
+                <action android:name="com.safeguardme.STOP_VOICE_DETECTION" />
+                <action android:name="com.safeguardme.UPDATE_VOICE_KEYWORD" />
+                <action android:name="com.safeguardme.ENABLE_DIAGNOSTICS" />
+                <action android:name="com.safeguardme.FORCE_RESTART" />
+            </intent-filter>
+        </service>
+
+
+        <!-- ================================================================ -->
+        <!-- SAFETY MONITORING SERVICE: Location, photos, emergency notifications -->
+        <!-- ================================================================ -->
+
         <service
             android:name=".services.SafetyMonitoringService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="location|microphone|camera"
+            android:foregroundServiceType="location"
             android:stopWithTask="false">
+
+            <!-- CRITICAL: NO 'microphone' type - only location -->
+
             <intent-filter>
-                <action android:name="com.safeguardme.START_SAFETY_MONITORING" />
-                <action android:name="com.safeguardme.STOP_SAFETY_MONITORING" />
-                <action android:name="com.safeguardme.EMERGENCY_ESCALATION" />
+                <action android:name="START_MONITORING" />
+                <action android:name="STOP_MONITORING" />
+                <action android:name="EMERGENCY_ESCALATION" />
+                <action android:name="VOICE_TRIGGER_DETECTED" />
             </intent-filter>
         </service>
 
-        <!--<service
-            android:name=".services.SafetyVoiceInteractionService"
-            android:permission="android.permission.BIND_VOICE_INTERACTION"
-            android:exported="true"
-            tools:ignore="MissingClass">
-            <intent-filter>
-                <action android:name="android.service.voice.VoiceInteractionService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.voice_interaction"
-                android:resource="@xml/voice_interaction_service" />
-        </service>-->
+
+
+
 
         <!-- ✅ EMERGENCY BROADCAST RECEIVER -->
         <receiver
@@ -174,6 +200,23 @@
             </intent-filter>
         </receiver>
 
+        <!-- ✅ NEW: SMS Delivery Tracking Receivers -->
+        <receiver android:name=".services.EmergencySMSService$SMSSentReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="SMS_SENT" />
+            </intent-filter>
+        </receiver>
+
+        <receiver android:name=".services.EmergencySMSService$SMSDeliveredReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="SMS_DELIVERED" />
+            </intent-filter>
+        </receiver>
+
         <!-- ✅ DEVICE ADMIN RECEIVER FOR ENHANCED SECURITY -->
         <receiver
             android:name=".receivers.SafetyDeviceAdminReceiver"
@@ -187,6 +230,19 @@
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
             </intent-filter>
         </receiver>
+
+        <!-- Voice trigger receiver (for inter-service communication) -->
+        <receiver
+            android:name=".receivers.VoiceTriggerReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.safeguardme.VOICE_TRIGGER_DETECTED" />
+                <action android:name="com.safeguardme.VOICE_DETECTION_HEALTH_REPORT" />
+            </intent-filter>
+        </receiver>
+
+
 
         <!-- ✅ FILE PROVIDER FOR SHARING EVIDENCE -->
         <provider

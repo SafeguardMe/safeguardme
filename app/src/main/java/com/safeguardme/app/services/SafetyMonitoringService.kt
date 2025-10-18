@@ -62,6 +62,7 @@ class SafetyMonitoringService : Service() {
         const val ACTION_START_MONITORING = "START_MONITORING"
         const val ACTION_STOP_MONITORING = "STOP_MONITORING"
         const val ACTION_EMERGENCY_ESCALATION = "EMERGENCY_ESCALATION"
+        const val ACTION_VOICE_TRIGGER_DETECTED = "VOICE_TRIGGER_DETECTED"
 
         fun startMonitoring(context: Context) {
             val intent = Intent(context, SafetyMonitoringService::class.java).apply {
@@ -98,6 +99,7 @@ class SafetyMonitoringService : Service() {
             ACTION_START_MONITORING -> startSafetyMonitoring()
             ACTION_STOP_MONITORING -> stopSafetyMonitoring()
             ACTION_EMERGENCY_ESCALATION -> escalateToEmergency()
+            ACTION_VOICE_TRIGGER_DETECTED -> handleVoiceTrigger(intent)
         }
 
         return START_STICKY // Restart if killed
@@ -116,7 +118,7 @@ class SafetyMonitoringService : Service() {
         currentSessionId = generateSessionId()
         startForeground(NOTIFICATION_ID, createNotification("Safety Mode Active", "Monitoring your safety..."))
 
-        monitoringJob = serviceScope.launch()  {
+        monitoringJob = serviceScope.launch()  @androidx.annotation.RequiresPermission(android.Manifest.permission.RECORD_AUDIO) {
             try {
                 // Start all monitoring components
                 startAudioRecording()
@@ -164,6 +166,16 @@ class SafetyMonitoringService : Service() {
                 Log.e(TAG, "❌ Error stopping safety monitoring", e)
             }
         }
+    }
+
+    private fun handleVoiceTrigger(intent: Intent) {
+        val keyword = intent.getStringExtra("keyword") ?: ""
+        val fullText = intent.getStringExtra("full_text") ?: ""
+        val confidence = intent.getFloatExtra("confidence", 0f)
+
+        Log.d(TAG, "🎙️ Voice trigger forwarded: keyword='$keyword' confidence=$confidence")
+
+        // Currently just logs; integration with speech manager or evidence capture can be added here.
     }
 
     private fun escalateToEmergency() {

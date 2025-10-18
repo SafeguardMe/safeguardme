@@ -1,18 +1,28 @@
 // ui/viewmodels/AIAssistanceViewModel.kt
 package com.safeguardme.app.ui.viewmodels
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.safeguardme.app.data.models.ChatMessage
 import com.safeguardme.app.data.models.Sender
+import com.safeguardme.app.data.repositories.AIAssistantRepository
+import com.safeguardme.app.BuildConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class AIAssistanceViewModel @Inject constructor() : ViewModel() {
+class AIAssistanceViewModel @Inject constructor(
+    private val aiAssistantRepository: AIAssistantRepository
+) : ViewModel() {
 
     // Chat state
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -29,15 +39,13 @@ class AIAssistanceViewModel @Inject constructor() : ViewModel() {
     val isAIActive: StateFlow<Boolean> = _isAIActive.asStateFlow()
 
     // Status indicator
-    val statusText: StateFlow<String> = _isTyping
-        .map { typing ->
-            when {
-                typing -> "SafeguardMe Assistant is typing..."
-                _isAIActive.value -> "SafeguardMe Assistant - Live AI"
-                else -> "SafeguardMe Assistant - FAQ Mode"
-            }
+    val statusText: StateFlow<String> = combine(_isTyping, _isAIActive) { typing, live ->
+        when {
+            typing -> "SafeguardMe Assistant is typing..."
+            live -> "SafeguardMe Assistant - Live AI"
+            else -> "SafeguardMe Assistant - FAQ Mode"
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "SafeguardMe Assistant")
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "SafeguardMe Assistant")
 
     // Quick topic suggestions
     val quickTopics = listOf(
@@ -169,9 +177,21 @@ class AIAssistanceViewModel @Inject constructor() : ViewModel() {
     init {
         // Add welcome message
         addWelcomeMessage()
+
+        if (aiAssistantRepository.isConfigured()) {
+            _isAIActive.value = true
+        }
+
+        Log.d(TAG, "OpenAI configured: ${aiAssistantRepository.isConfigured()} (key length=${BuildConfig.OPENAI_API_KEY.length})")
     }
 
     private fun addWelcomeMessage() {
+        val liveModeTip = if (aiAssistantRepository.isConfigured()) {
+            "Toggle the AI icon to enable live OpenAI-powered support when you need more detailed guidance."
+        } else {
+            "To unlock live AI support, add an OpenAI API key to your local.properties file."
+        }
+
         val welcomeMessage = ChatMessage(
             sender = Sender.BOT,
             text = "👋 Hello! I'm your SafeguardMe Assistant. I'm here to provide support, information, and resources about domestic violence.\n\n" +
@@ -180,7 +200,7 @@ class AIAssistanceViewModel @Inject constructor() : ViewModel() {
                     "• Safety planning strategies\n" +
                     "• Emotional support resources\n" +
                     "• Emergency contacts and hotlines\n\n" +
-                    "What would you like to know about today?"
+                    "$liveModeTip"
         )
         _messages.value = listOf(welcomeMessage)
     }
@@ -216,22 +236,46 @@ class AIAssistanceViewModel @Inject constructor() : ViewModel() {
     }
 
     fun toggleAIMode() {
-        _isAIActive.value = !_isAIActive.value
+        if (!aiAssistantRepository.isConfigured()) {
+            val detectedLength = BuildConfig.OPENAI_API_KEY.length
+            val hint = "Detected key length: $detectedLength. After updating local.properties run a Gradle sync/rebuild so the key reaches BuildConfig."
+            postAssistantNotice(AIAssistantRepository.MISSING_KEY_MESSAGE + "\n" + hint)
+            return
+        }
+
+        val enabled = !_isAIActive.value
+        _isAIActive.value = enabled
+
+        val notice = if (enabled) {
+            "Live AI mode enabled. I'll craft tailored answers using OpenAI while keeping your safety first."
+        } else {
+            "Switched back to offline FAQ guidance."
+        }
+        postAssistantNotice(notice)
     }
 
     private fun generateBotResponse(userInput: String) {
         viewModelScope.launch {
             // Show typing indicator
             _isTyping.value = true
-            delay(1500) // Simulate thinking time
+            delay(600)
 
-            val response = findBestResponse(userInput)
-            val botMessage = ChatMessage(
-                sender = Sender.BOT,
-                text = response
-            )
+            val response = if (_isAIActive.value && aiAssistantRepository.isConfigured()) {
+                aiAssistantRepository.fetchAssistantReply(_messages.value)
+                    .onFailure { error ->
+                        Log.e(TAG, "Live AI response failed", error)
+                        val reason = error.message?.takeIf { it.isNotBlank() }
+                            ?: error.javaClass.simpleName
+                        postAssistantNotice(
+                            "Live AI is temporarily unavailable.\nReason: $reason\nShowing trusted offline guidance instead."
+                        )
+                    }
+                    .getOrNull()
+            } else null
 
-            _messages.value = _messages.value + botMessage
+            val text = response ?: findBestResponse(userInput)
+
+            appendBotMessage(text)
             _isTyping.value = false
         }
     }
@@ -284,5 +328,21 @@ class AIAssistanceViewModel @Inject constructor() : ViewModel() {
     fun clearChat() {
         _messages.value = emptyList()
         addWelcomeMessage()
+    }
+
+    private fun appendBotMessage(text: String) {
+        val botMessage = ChatMessage(
+            sender = Sender.BOT,
+            text = text
+        )
+        _messages.value = _messages.value + botMessage
+    }
+
+    private fun postAssistantNotice(message: String) {
+        appendBotMessage(message)
+    }
+
+    companion object {
+        private const val TAG = "AIAssistanceVM"
     }
 }

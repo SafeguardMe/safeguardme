@@ -224,7 +224,10 @@ data class EmergencySettings(
     val emergencyRecordingEnabled: Boolean = false,
     val automaticCheck: Boolean = true,
     val checkInFrequencyMinutes: Int = 60,
-    val maxResponseTimeMinutes: Int = 5
+    val maxResponseTimeMinutes: Int = 5,
+    val volumeGestureEnabled: Boolean = true,
+    val shakeGestureEnabled: Boolean = true,
+    val powerGestureEnabled: Boolean = false
 )
 
 /**
